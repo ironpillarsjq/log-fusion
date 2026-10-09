@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>日志融合与审计分析平台</title>
+<style>body{font-family:Arial,"Microsoft YaHei",sans-serif;margin:0;background:#f4f7fb;color:#1f2937}header{background:#1d4ed8;color:#fff;padding:18px 28px}main{max-width:1200px;margin:24px auto;padding:0 18px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px}.card,section{background:#fff;border-radius:10px;padding:18px;box-shadow:0 2px 12px #dbe3f0}.value{font-size:28px;font-weight:700;margin-top:10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}li{margin:8px 0}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head>
+<body><header><strong>日志融合与审计分析平台</strong><span style="float:right">FastAPI</span></header><main>
+<div class="cards"><div class="card">日志总量<div class="value">{{ summary.total }}</div></div><div class="card">Linux<div class="value">{{ summary.by_platform.Linux }}</div></div><div class="card">Windows<div class="value">{{ summary.by_platform.Windows }}</div></div></div>
+<div class="grid"><section><h2>日志类别</h2><ul>{% for item in summary.categories %}<li>{{ item.platform }} · {{ item.label }}：{{ item.count }}</li>{% endfor %}</ul></section><section><h2>功能入口</h2><ul><li><a href="/api/v1/logs/categories">日志类别接口</a></li><li><a href="/api/v1/logs/summary">日志统计接口</a></li><li><a href="/health">数据库健康检查</a></li><li>客户端心跳监控、实时日志流和存证校验接口已提供</li></ul></section></div>
+</main></body></html>

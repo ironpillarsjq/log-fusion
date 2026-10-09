@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: log-backend
+
+  datasource:
+    url: jdbc:mysql://192.168.5.6:3306/?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: mysql_YbJWfE
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+log-database:
+  windows: windows_logs
+  linux: log-linux
+
+# 接收到的日志原文会按主机类型分别追加写入以下文件。相对路径以应用启动目录为基准。
+log-storage:
+  windows-file: data/windows/raw-logs.log
+  linux-file: data/linux/raw-logs.log
+
+# Python 只负责把 Fluent Bit JSON 归一化为结构化 JSON，MySQL 由 Java 统一写入。
+log-processing:
+  python-command: python
+  windows-script: ${user.dir}/src/main/python/windows/process_logs.py
+  linux-script: ${user.dir}/src/main/python/linux/process_logs.py
+  timeout-seconds: 30
+
+# Phase 2: 后续启用 MyBatis 时取消注释
+# mybatis:
+#   mapper-locations: classpath:mapper/*.xml

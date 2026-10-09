@@ -1,0 +1,1 @@
+"""Log Fusion FastAPI application."""

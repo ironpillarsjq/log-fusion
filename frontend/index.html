@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>日志融合与审计分析平台</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>
+<div class="app-shell">
+  <header class="topbar"><div class="brand"><span class="brand-mark">LF</span><div><strong>日志融合与审计分析平台</strong><small>Log Fusion · Audit Operations</small></div></div><div class="top-actions"><span class="live-dot"></span><span id="clock"></span><span class="user-chip">审计管理员</span></div></header>
+  <div class="body-shell">
+    <aside class="sidebar"><div class="side-label">平台导航</div><button class="nav-item active" data-page="overview">运行概览 <span>⌂</span></button><button class="nav-item" data-page="heartbeat">客户端心跳监控 <span>◉</span></button><button class="nav-item" data-page="logs">融合日志管理 <span>▤</span></button><button class="nav-item" data-page="evidence">完整性存证 <span>✓</span></button><div class="side-label muted">分析工具</div><button class="nav-item disabled">异常检测 <span>◇</span></button><button class="nav-item disabled">告警中心 <span>!</span></button><button class="nav-item disabled">系统配置 <span>⚙</span></button><div class="side-status"><span class="live-dot"></span><div><b>服务运行正常</b><small>数据库连接正常</small></div></div></aside>
+    <main id="main" class="content"></main>
+  </div>
+</div>
+<div id="toast"></div><script src="/static/app.js"></script>
+</body></html>

@@ -1,0 +1,83 @@
+/* ==========================================================================
+   Element Plus 主题对齐
+   目标：融合日志页用的 Element Plus 控件，与原型（logs.html）的蓝色、3px 圆角、
+   紧凑密度保持一致；心跳页没有用 Element Plus，不受影响。
+   ========================================================================== */
+
+:root {
+  --el-color-primary: #1769b0;
+  --el-color-primary-light-3: #4a8cc5;
+  --el-color-primary-light-5: #7aabd6;
+  --el-color-primary-light-7: #a9cae6;
+  --el-color-primary-light-8: #c1d9ee;
+  --el-color-primary-light-9: #eaf3fc;
+  --el-color-primary-dark-2: #12568f;
+
+  --el-border-radius-base: 3px;
+  --el-border-radius-small: 3px;
+  --el-font-size-base: 13px;
+  --el-text-color-regular: #475467;
+  --el-border-color: #cbd5e1;
+  --el-border-color-light: #dce3ec;
+  --el-border-color-lighter: #e9eef4;
+  --el-fill-color-light: #f5f8fb;
+}
+
+/* 控件高度对齐原型的 34px */
+.el-button {
+  min-height: 34px;
+}
+
+.el-input__wrapper,
+.el-select__wrapper {
+  min-height: 34px;
+}
+
+.el-date-editor.el-input__wrapper,
+.el-date-editor--datetimerange {
+  min-height: 34px;
+}
+
+/* 表格里的链接按钮不应该被撑到 34px */
+.el-button.is-link {
+  min-height: auto;
+  padding: 3px 4px;
+}
+
+/* 日志表格：沿用原型的表头底色与紧凑字号 */
+.workspace .el-table {
+  --el-table-header-bg-color: #edf3f9;
+  --el-table-header-text-color: #3e5066;
+  --el-table-border-color: #e8edf3;
+  --el-table-row-hover-bg-color: #f7faff;
+  --el-table-text-color: #344054;
+}
+
+.workspace .el-table th.el-table__cell {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 表头是 `key（label）` 形式，不允许折行；列宽不足时由 show-overflow-tooltip 兜底 */
+.workspace .el-table th.el-table__cell > .cell {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace .el-table .cell {
+  font-size: 12px;
+}
+
+.workspace .el-pagination {
+  --el-pagination-font-size: 12px;
+  --el-pagination-button-height: 28px;
+}
+
+/* 摘要条与筛选区里的控件不要带阴影，保持平面感 */
+.workspace .el-input__wrapper,
+.workspace .el-select__wrapper,
+.filter-zone .el-input__wrapper,
+.filter-zone .el-select__wrapper {
+  box-shadow: 0 0 0 1px #cbd5e1 inset;
+}
