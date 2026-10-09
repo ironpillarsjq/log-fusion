@@ -4,10 +4,11 @@ import io
 import json
 import os
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi import FastAPI, Request, Query, HTTPException, Body
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,7 +29,26 @@ event_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return FileResponse(frontend_dir / "index.html")
+    # The UI is server-rendered with Jinja2; Alpine/HTMX enhance interactions
+    # without turning the application into a separate SPA frontend.
+    try:
+        dashboard = summary()
+    except Exception:
+        dashboard = {"total": 0, "by_platform": {"Linux": 0, "Windows": 0}, "categories": []}
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={"summary": dashboard},
+    )
+
+
+@app.get("/partials/db-status", response_class=HTMLResponse)
+def db_status_partial():
+    status = db_health()
+    return "".join(
+        f'<span class="badge rounded-pill text-bg-{"success" if connected else "danger"}">{name}: {"已连接" if connected else "不可用"}</span> '
+        for name, connected in status.items()
+    )
 
 
 @app.get("/health")
@@ -126,6 +146,8 @@ def _insert_windows(records: list[dict]):
     table_map = {"application": "application_logs", "security": "security_logs", "setup": "setup_logs", "system": "system_logs", "forwardedevents": "forwardedevents_logs"}
     with windows_engine.begin() as conn:
         for item in records:
+            if "event_time" not in item and item.get("TimeGenerated"):
+                item = {**item, "event_time": item.get("TimeGenerated"), "event_id": item.get("EventID"), "record_number": item.get("RecordNumber"), "source_name": item.get("SourceName"), "computer_name": item.get("ComputerName"), "channel": item.get("Channel"), "raw": item}
             channel = str(item.get("channel") or "application").lower().replace("-", "")
             table = table_map.get(channel, "application_logs")
             conn.execute(text(f"INSERT INTO `{table}` (source_year, source_file, provider_name, event_id, time_created, event_record_id, channel, computer, system_extra, eventdata) VALUES (:year, :file, :provider, :event_id, :time_created, :record, :channel, :computer, :extra, :data)"), {"year": str(item.get("event_time", ""))[:4] or None, "file": f"fluent-bit://{item.get('client_id') or 'unknown'}/{channel}", "provider": item.get("source_name"), "event_id": item.get("event_id"), "time_created": item.get("event_time"), "record": item.get("record_number"), "channel": channel, "computer": item.get("computer_name"), "extra": "{}", "data": json.dumps(item.get("raw", item), ensure_ascii=False)})
@@ -135,6 +157,8 @@ def _insert_linux(records: list[dict]):
     with linux_engine.begin() as conn:
         for item in records:
             normalized = item.get("normalized") if isinstance(item.get("normalized"), dict) else item
+            if "event_time" not in normalized and item.get("timestamp"):
+                normalized = {**normalized, "event_time": item.get("timestamp"), "event_id": abs(hash(f"{item.get('timestamp')}|{item.get('log','')}")) % 2147483647, "category": "authentication_session", "type": "SYSLOG", "tips": item.get("log")}
             category = str(normalized.get("category") or item.get("category") or "authentication_session")
             if category not in {"authentication_session", "account_security_change", "process_command_execution", "file_object_access", "network_ipc_communication", "system_service_audit_lifecycle", "security_policy_config_change"}:
                 category = "authentication_session"
@@ -149,17 +173,24 @@ def _insert_linux(records: list[dict]):
 
 
 @app.post("/api/v1/logs/{platform}")
-async def ingest_logs(platform: str, payload: Any):
+async def ingest_logs(platform: str, payload: Any = Body(...)):
     if platform.lower() not in {"linux", "windows"}:
         raise HTTPException(404, "unsupported platform")
     records = payload if isinstance(payload, list) else [payload]
-    if platform.lower() == "windows":
-        _insert_windows(records)
-    else:
-        _insert_linux(records)
+    persisted = True
+    try:
+        if platform.lower() == "windows":
+            await asyncio.wait_for(asyncio.to_thread(_insert_windows, records), timeout=8)
+        else:
+            await asyncio.wait_for(asyncio.to_thread(_insert_linux, records), timeout=8)
+    except Exception as exc:
+        # Real Fluent Bit payloads must still reach the live stream when an
+        # old table has a schema difference; persistence can be migrated later.
+        persisted = False
+        print(f"log persistence failed ({platform}): {exc}")
     for item in records:
         await event_queue.put({"platform": platform, "category": item.get("category") or item.get("channel"), "eventTime": item.get("event_time") or item.get("TimeGenerated")})
-    return JSONResponse(status_code=200, content={"accepted": len(records)})
+    return JSONResponse(status_code=200, content={"accepted": len(records), "persisted": persisted})
 
 
 @app.get("/api/v1/logs/export")
