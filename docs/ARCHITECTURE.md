@@ -47,7 +47,7 @@ flowchart LR
 | `backend/app/parsers.py` | 原始日志 → 数据库行的解析（Linux auditd/syslog、Windows winlog），时间与列类型归一化 | 纯函数，无状态 |
 | `backend/app/ws.py` | 维护浏览器 WebSocket 集合并广播快照 | 进程内，不跨 worker |
 | `dashboard.html` | 服务端页面骨架与四个功能区 | 根路由渲染 |
-| `frontend/app.js` | Alpine 页面状态、REST 调用、SSE、心跳 WebSocket 连接/重连/假死检测、图表与 CSV 客户端导出 | 浏览器内存 |
+| `frontend/app.js` | Alpine 页面状态、REST 调用、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
 | `启动服务.ps1` | 校验解释器、配置 PYTHONPATH、尝试开放防火墙、启动 Uvicorn | 默认 8080 |
 | `backend/simulator/...` | 读取外部样例并发送心跳及两类日志 | 开发联调工具 |
 

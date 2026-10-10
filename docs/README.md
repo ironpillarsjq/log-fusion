@@ -42,7 +42,7 @@ log-fusion/
 │   └── index.html              # 未配置为当前入口
 ├── docs/                       # 当前实现的维护文档
 ├── tests/                      # pytest 单元/契约测试（不连接数据库）
-├── tools/                      # .cmd 启动器的 ASCII 转发脚本
+├── tools/                      # .cmd 启动器的 ASCII 转发脚本；chart-layout-check.cjs（概览环形图布局自检）
 ├── 旧前端/                     # 遗留 Vue SPA，只读参考
 ├── 旧后端/                     # 遗留 Spring Boot，只读参考
 ├── 启动服务.cmd / 启动服务.ps1
@@ -172,7 +172,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
 - 页面能打开但统计为 0：检查 `/health`；首页会吞掉汇总异常并显示 0。
 - 日志接收返回 200 但没入库：看响应的 `persisted`、`inserted`、`skipped`、`failed` 与 `errors[].stage`——`parse` 表示解析失败（记录里有 `reason`），`insert` 表示数据库写入失败（`reason` 是 MySQL 错误摘要）。
 - 存证接口返回空：已核验本环境 `linux_logs` 与 `log_fusion` 中都不存在 `audit_log_evidence`，该接口必然返回空集合；需先确认该表由谁写入。
-- 页面元素错位或图表空白：确认 `/static/vendor/` 下文件返回 200（依赖已自托管，不再需要公网）。
+- 页面元素错位或图表空白：确认 `/static/vendor/` 下文件返回 200（依赖已自托管，不再需要公网）。改动概览环形图布局后，用 `node tools/chart-layout-check.cjs` 自检（真实 `app.js` + 真实 ECharts 服务端渲染，断言图例与图形不重叠、内容不被裁掉）。
 - 局域网无法访问：检查防火墙规则和代理/TUN 网卡；服务脚本无管理员权限时只打印补救命令。
 - 模拟脚本启动失败：确认样例文件 `C:\Users\ironp\Desktop\data\linux\raw-logs.log` 与 `windows\raw-logs.log` 存在且非空，或用 `-DataDir` 指向正确目录。
 - 心跳跨重启保留但实时连接丢失：数据在 MySQL，WebSocket 连接和日志 SSE 队列仅存在于进程内。

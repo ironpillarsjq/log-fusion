@@ -1,6 +1,6 @@
 function dashboard() {
   return {
-    page:'overview',clock:'',summary:{total:0,by_platform:{Linux:0,Windows:0},categories:[]},categories:[],clients:[],logs:[],evidence:[],logKeys:[],logPlatform:'Linux',logCategory:'authentication_session',keyword:'',heartbeatMetrics:[],evidenceMetrics:[],overviewMetrics:[],wsStatus:'connecting',ws:null,wsRetry:0,wsTimer:null,wsLastMsg:0,wsWatchTimer:null,pollTimer:null,summaryTimer:null,pageTimer:null,
+    page:'overview',clock:'',summary:{total:0,by_platform:{Linux:0,Windows:0},categories:[]},categories:[],clients:[],logs:[],evidence:[],logKeys:[],logPlatform:'Linux',logCategory:'authentication_session',keyword:'',heartbeatMetrics:[],evidenceMetrics:[],overviewMetrics:[],wsStatus:'connecting',ws:null,wsRetry:0,wsTimer:null,wsLastMsg:0,wsWatchTimer:null,pollTimer:null,summaryTimer:null,pageTimer:null,chart:null,chartNote:'',resizeTimer:null,
     fmt(v){return Number(v||0).toLocaleString('zh-CN')},
 
     bootWarning(html){const el=document.getElementById('lf-boot-warning');if(!el)return;el.style.display='';el.innerHTML=html},
@@ -27,6 +27,8 @@ function dashboard() {
 
     async init(){
       window.addEventListener('pagehide',()=>this.closeStreams());
+      // 环形图默认只按容器初始尺寸绘制，窗口变化后必须重画，否则图形与图例错位
+      window.addEventListener('resize',()=>{clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>this.drawChart(),150)});
       this.tick();setInterval(()=>this.tick(),1000);
       await this.refreshSummary();
       try{this.categories=await this.api('/api/v1/logs/categories')}catch(e){}
@@ -49,7 +51,48 @@ function dashboard() {
     },
 
     async refreshSummary(){try{this.summary=await this.api('/api/v1/logs/summary');this.overviewMetrics=[{label:'日志总量',value:this.fmt(this.summary.total),hint:'每 10 秒刷新'},{label:'Linux 日志',value:this.fmt(this.summary.by_platform.Linux),hint:'审计日志'},{label:'Windows 日志',value:this.fmt(this.summary.by_platform.Windows),hint:'事件日志'},this.realtimeMetric()];this.drawChart()}catch(e){this.warn('概览统计加载失败',e)}},
-    drawChart(){const el=document.getElementById('category-chart');if(!el||!window.echarts)return;const chart=echarts.init(el);chart.setOption({tooltip:{trigger:'item'},legend:{bottom:0},series:[{type:'pie',radius:['42%','72%'],data:(this.summary.categories||[]).map(x=>({name:x.platform+' · '+x.label,value:x.count}))}]})},
+    showOverview(){this.page='overview';setTimeout(()=>this.drawChart(),0)},
+    // 概览环形图。三个必须守住的点：① 复用同一 ECharts 实例（原先每次刷新都 echarts.init 一遍，
+    // 反复新建实例并打印 "instance already initialized" 告警）；② 区块被 x-show 隐藏时容器宽高为 0，
+    // 必须直接跳过，否则会画成 0×0；③ 图例与环形图各占一块区域，避免长类别名压住图形。
+    drawChart(){
+      const el=document.getElementById('category-chart');
+      if(!el||!window.echarts||!el.clientWidth||!el.clientHeight)return;
+      if(this.chart&&(this.chart.isDisposed()||this.chart.getDom()!==el))this.chart=null;
+      if(!this.chart)this.chart=echarts.getInstanceByDom(el)||echarts.init(el);
+      const all=this.summary.categories||[];
+      // 0 条类别在环形图上是不可见的切片，只会在图例里堆字，直接省略并在图下注明
+      const rows=all.filter(x=>Number(x.count)>0).map(x=>({name:x.platform+' · '+x.label,value:Number(x.count)}));
+      const zero=all.length-rows.length;
+      this.chartNote=rows.length?(zero?`另有 ${zero} 个类别当前为 0 条，已从环形图省略`:''):'尚未采集到任何日志';
+      const trunc=(w)=>({fontSize:11,color:'#5f6e85',width:w,overflow:'truncate'});
+      const option={
+        color:['#2f6bff','#4cc38a','#f2b134','#f2705b','#8f7dff','#22b8a6','#7c8db5','#c86bd6','#3aa8d8','#e0719a','#9aa8bd','#b9c3d3'],
+        tooltip:{trigger:'item',formatter:p=>`${p.marker}${p.name}<br/>${Number(p.value).toLocaleString('zh-CN')} 条（${p.percent.toFixed(1)}%）`},
+        legend:{type:'scroll',icon:'circle',itemWidth:10,itemHeight:10,
+          pageIconColor:'#2867d8',pageIconInactiveColor:'#c2ccdb',pageTextStyle:{color:'#5f6e85',fontSize:11},
+          tooltip:{show:true}},
+        title:rows.length?{show:false}:{text:'暂无日志数据',left:'center',top:'middle',textStyle:{color:'#9aa8bd',fontSize:13,fontWeight:'normal'}},
+        series:[{type:'pie',avoidLabelOverlap:true,minAngle:2,minShowLabelAngle:5,
+          itemStyle:{borderColor:'#fff',borderWidth:2},
+          label:{show:true,fontSize:11,color:'#61708a',formatter:p=>p.percent.toFixed(1)+'%'},
+          labelLine:{show:true,length:8,length2:8,lineStyle:{color:'#cfd9e8'}},
+          emphasis:{scale:true,scaleSize:6,label:{fontWeight:'bold'}},
+          data:rows}]
+      };
+      if(el.clientWidth<560){
+        // 窄屏：图例换到下方并允许折行（scroll 型在窄屏会分页成「1/3」并把条目顶出画布），
+        // 环形图上移并缩小，同时关掉外侧文字标签——窄屏画标签必然压住图例
+        Object.assign(option.legend,{type:'plain',orient:'horizontal',left:'center',right:'auto',top:'auto',bottom:0,itemGap:8,textStyle:trunc(100)});
+        Object.assign(option.series[0],{center:['50%','38%'],radius:['30%','50%'],label:{show:false},labelLine:{show:false}});
+      }else{
+        // 宽屏：图例独占右侧一列，环形图左移让位，两者互不遮挡
+        Object.assign(option.legend,{orient:'vertical',left:'auto',right:6,top:'middle',bottom:'auto',itemGap:9,textStyle:trunc(190)});
+        Object.assign(option.series[0],{center:['32%','50%'],radius:['46%','70%']});
+      }
+      this.chart.resize();
+      this.chart.setOption(option);
+    },
     async loadHeartbeats(){try{const [s,d]=await Promise.all([this.api('/api/v1/monitor/summary'),this.api('/api/v1/monitor/clients')]);this.clients=d.items||[];this.heartbeatMetrics=[{label:'客户端总数',value:s.total,hint:'纳管客户端'},{label:'在线客户端',value:s.states.ONLINE,hint:s.onlineRate+'% 在线率'},{label:'延迟客户端',value:s.states.DELAYED,hint:'需要关注'},{label:'离线客户端',value:s.states.OFFLINE,hint:'连接中断'}]}catch(e){this.warn('心跳数据加载失败',e)}},
     async loadLogs(){try{if(!this.categories.length)this.categories=await this.api('/api/v1/logs/categories');const choices=this.categories.filter(x=>x.platform===this.logPlatform);if(!choices.some(x=>x.key===this.logCategory))this.logCategory=choices[0]?.key||'';const d=await this.api(`/api/v1/logs/categories/${this.logCategory}?platform=${this.logPlatform}&page=1&size=30&keyword=${encodeURIComponent(this.keyword)}`);this.logs=d.items||[];this.logKeys=this.logs.length?Object.keys(this.logs[0]):[]}catch(e){this.warn('日志列表加载失败',e)}},
     async loadEvidence(){try{const [s,d]=await Promise.all([this.api('/api/v1/evidence/summary'),this.api('/api/v1/evidence?page=1&size=100')]);this.evidence=d.items||[];this.evidenceMetrics=[{label:'存证总数',value:s.total,hint:'独立原始记录'},{label:'校验正常',value:s.statuses.VALID,hint:'SHA-256 一致'},{label:'哈希异常',value:s.statuses.HASH_MISMATCH,hint:'需要复核'},{label:'待校验',value:s.statuses.PENDING,hint:'等待校验'}]}catch(e){this.warn('存证数据加载失败',e)}},
