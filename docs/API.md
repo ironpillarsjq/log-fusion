@@ -103,7 +103,9 @@
 
 ### 4.2 `GET /api/v1/logs/summary`
 
-无参数。逐表统计 12 个类别。
+无参数。逐表统计 12 个类别（7 张 Linux 表 + 5 张 Windows 表）。
+
+`total` 只包含这 12 张日志表；**客户端心跳（`log_fusion.client_status`）不计入**，心跳客户端数量见 §6 `/api/v1/monitor/summary`。
 
 ```json
 {

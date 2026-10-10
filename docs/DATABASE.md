@@ -62,6 +62,8 @@
 - 已有 `client_id` 更新主机名、IP、系统、最后心跳、延迟、状态和 `updated_at`。
 - 请求中的多条心跳在一个 Session 事务中提交；任一异常导致接口返回 503。
 - `client_id` 缺失时使用 `UNKNOWN_HOST`，因此多个缺失标识的客户端会覆盖同一行。
+- **这张表不是日志表**：心跳只写 `log_fusion.client_status`，`/api/v1/logs/*`（汇总、列表、搜索、导出、`/recent`）只读 `linux_logs`/`windows_logs`，因此心跳记录**不计入**接口返回的日志总量。2026-10-10 实测：`client_status` 6 行 / 6 个客户端，同一时刻 `/api/v1/logs/summary` 的 `total` 为 425812（= Linux 160552 + Windows 265260），两者互不包含。
+- **`AUTO_INCREMENT` 会跳号**：`ON DUPLICATE KEY UPDATE` 同样消耗自增值（先分配 id，撞唯一键再改写），所以 `AUTO_INCREMENT=1857` 只代表累计写过约 1856 次心跳，不代表有 1856 行——行数始终等于去重后的 `client_id` 数量。
 
 watchdog 每 5 秒读取全表并在状态变化时提交。API 响应还会根据 `last_heartbeat` 动态重算状态，数据库 `status` 不是唯一计算来源。
 

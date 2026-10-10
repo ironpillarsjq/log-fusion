@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+### Docs — 2026-10-10（澄清心跳与日志总量的口径）
+
+- 疑问来源：「收到心跳后，心跳数据会不会当成日志入库、算不算在日志总量里」。答案是两条独立链路，代码与线上数据均已核验：
+  心跳经 `persist_heartbeats()` 只 upsert 到 `log_fusion.client_status`，而 `/api/v1/logs/*`（汇总、列表、搜索、导出、
+  `/recent`）只读 `linux_logs`/`windows_logs`；心跳走 WebSocket `/ws/client-monitor` 广播，不进入日志 SSE 队列。
+- `docs/API.md` §4.2 补充：`/api/v1/logs/summary` 的 `total` 只含 12 张日志表，心跳客户端数见 §6 `/api/v1/monitor/summary`。
+- `docs/DATABASE.md` §3.1 补充：`client_status` 不是日志表、不计入日志总量（附实测：6 行 / 6 个客户端，
+  同一时刻 `total` 为 425812 = Linux 160552 + Windows 265260）；并记录 `INSERT ... ON DUPLICATE KEY UPDATE`
+  也会消耗自增值，因此 `AUTO_INCREMENT=1857` 不等于 1857 行心跳。
+
 ### Fixed — 2026-10-10（概览环形图图例压住图形）
 
 - 概览「日志类别分布」原本只有一个 280px 高的容器：12 个类别全塞在 `legend:{bottom:0}`，
