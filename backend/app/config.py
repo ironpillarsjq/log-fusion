@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     db_password: str = "mysql_YbJWfE"
     linux_db: str = "linux_logs"
     windows_db: str = "windows_logs"
+    log_fusion_db: str = "log_fusion"
     raw_storage_dir: str = "data/raw"
 
     @property
@@ -24,6 +25,10 @@ class Settings(BaseSettings):
     @property
     def windows_url(self) -> str:
         return f"{self.mysql_base}/{self.windows_db}?charset=utf8mb4"
+
+    @property
+    def log_fusion_url(self) -> str:
+        return f"{self.mysql_base}/{self.log_fusion_db}?charset=utf8mb4"
 
 
 @lru_cache

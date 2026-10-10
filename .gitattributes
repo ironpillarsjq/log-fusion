@@ -1,0 +1,4 @@
+# 自托管的第三方前端库必须与上游文件字节一致：
+# 禁止 git 的换行转换（core.autocrlf=true 时否则会在 checkout 时变成 CRLF），
+# 也避免 diff 把这些压缩文件当文本处理。升级流程见 frontend/vendor/README.md。
+frontend/vendor/** -text

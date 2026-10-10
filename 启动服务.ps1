@@ -6,7 +6,7 @@
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonRoot = Join-Path $ProjectRoot "python"
+$PythonRoot = Join-Path $ProjectRoot "backend"
 $EnvPython = "D:\Data\Miniconda3\conda_envs\log-fusion\python.exe"
 
 if (-not (Test-Path -LiteralPath $EnvPython)) {

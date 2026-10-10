@@ -84,7 +84,9 @@ def main() -> None:
         raise SystemExit("没有读取到 linux/raw-logs.log 或 windows/raw-logs.log 样例")
     print(f"loaded linux={len(linux)} windows={len(windows)}; target={args.url}", flush=True)
     linux_index = windows_index = 0
-    with httpx.Client() as client:
+    # trust_env=False：忽略 HTTP_PROXY/HTTPS_PROXY 等环境代理。否则在开了
+    # 系统代理的机器上，发往 127.0.0.1 的请求可能被送进代理并返回 502。
+    with httpx.Client(trust_env=False) as client:
         round_no = 0
         while args.count == 0 or round_no < args.count:
             round_no += 1
