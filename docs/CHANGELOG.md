@@ -4,6 +4,34 @@
 
 ## Unreleased
 
+### Added — 2026-10-11（原始日志 SHA-256 存证入库）
+
+- 新增第四个逻辑库 `log_hash` 与存证表 `log_hash.log_hash`：每条采集日志在写入业务表之前，
+  按 `sha256(timestamp + 0x1F + log)` 计算摘要，并把 `log` 原文与摘要一起保存，用于事后防篡改校验。
+  - 哈希输入固定为**采集端发来的原始字符串**（不 trim、不归一化、不转义），分隔符用 US（`0x1F`）
+    避免 `timestamp+log` 直接拼接产生歧义；`log` 中的控制字符（如 auditd 的 `0x1D`）按原始字节参与哈希。
+  - **`timestamp` 参与哈希**：syslog/auditd 中同一台机器在不同时刻产生内容完全相同的行很常见；
+    若只哈希 `log`，这些行会得到同一摘要并被唯一索引吞掉，存证将无法与日志一一对应。
+  - `log_hash` 列有唯一索引：同一 `(timestamp, log)` 重复上报（Fluent Bit 重试）只留一条存证，
+    唯一键命中按幂等成功处理。
+  - 落库失败/缺字段的降级：记录缺少 `log` 或内容为空（含全空白）时**跳过存证**，
+    在响应 `errors[]` 追加 `stage="hash"`，但**不影响日志入库**；`persisted` 只反映业务表结果。
+  - 新增可复现 DDL `docs/sql/log_hash.sql`（含 MySQL 侧复算摘要的校验 SQL）。
+- 代码新增 `backend/app/hashing.py`（纯函数：摘要计算 + 存证行构造 + 复算校验），与 `parsers.py` 同为可单测的解析层。
+- `config.py` 新增 `LOG_HASH_DB`（默认 `log_hash`）与 `LOG_HASH_TABLE`（默认 `log_hash`）；
+  `db.py` 新增 `hash_engine`；`models.py` 新增 `LogHash` ORM 模型；
+  启动时对 `hash_engine` 执行 `create_all(tables=[LogHash.__table__])`，失败只记日志不中断启动。
+- `POST /api/v1/logs/{platform}` 响应新增 `hashed` 字段，`errors[].stage` 新增取值 `hash`。
+- `/health` 与 `/partials/db-status` 新增 `log_hash` 连通性。
+- 新增 `tests/test_hashing.py`（18 个用例）锁住哈希输入定义：真实 auditd 样例、
+  同内容不同时间戳摘要不同、分隔符防拼接碰撞、首尾空白与控制字符按原文参与哈希、
+  缺 `log` 跳过存证、`raw_log` 不被列宽裁剪。测试总数 120 → 138。
+- 同步文档：`docs/DATABASE.md` §1/§2/§3.2、`docs/API.md` §2/§3.2/§3.3/§5.1、
+  `docs/ARCHITECTURE.md` §1/§2/§3/§9/§10/§12、`docs/README.md` §1/§2/§3/§4/§5。
+- **数据库变化**：新增库 `log_hash` 与表 `log_hash`（执行 `docs/sql/log_hash.sql` 或由应用启动自动建表）；
+  既有 `linux_logs`/`windows_logs`/`log_fusion` 的表结构未变。
+- **接口变化**：`/api/v1/logs/{platform}` 响应体新增 `hashed`；其余接口路径与参数不变。
+
 ### Docs — 2026-10-10（澄清心跳与日志总量的口径）
 
 - 疑问来源：「收到心跳后，心跳数据会不会当成日志入库、算不算在日志总量里」。答案是两条独立链路，代码与线上数据均已核验：

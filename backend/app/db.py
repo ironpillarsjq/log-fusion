@@ -8,6 +8,8 @@ settings = get_settings()
 linux_engine = create_engine(settings.linux_url, pool_pre_ping=True, pool_recycle=1800)
 windows_engine = create_engine(settings.windows_url, pool_pre_ping=True, pool_recycle=1800)
 monitor_engine = create_engine(settings.log_fusion_url, pool_pre_ping=True, pool_recycle=1800)
+# 原始日志存证库（log_hash）：与业务库分离，写存证失败不应影响日志入库
+hash_engine = create_engine(settings.log_hash_url, pool_pre_ping=True, pool_recycle=1800)
 
 
 class Base(DeclarativeBase):
@@ -41,7 +43,12 @@ def one(engine: Engine, sql: str, params: dict | None = None) -> dict | None:
 
 def db_health() -> dict:
     result = {}
-    for name, engine in (("linux_logs", linux_engine), ("windows_logs", windows_engine), ("log_fusion", monitor_engine)):
+    for name, engine in (
+        ("linux_logs", linux_engine),
+        ("windows_logs", windows_engine),
+        ("log_fusion", monitor_engine),
+        ("log_hash", hash_engine),
+    ):
         try:
             with engine.connect() as conn:
                 result[name] = bool(conn.execute(text("SELECT 1")).scalar())

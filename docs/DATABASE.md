@@ -4,15 +4,16 @@
 
 ## 1. 数据库划分
 
-当前应用连接同一 MySQL 服务上的三个逻辑库，并为每个库创建独立同步 SQLAlchemy Engine：
+当前应用连接同一 MySQL 服务上的四个逻辑库，并为每个库创建独立同步 SQLAlchemy Engine：
 
 | 配置项 | 默认库 | Engine | 用途 |
 |---|---|---|---|
 | `LINUX_DB` | `linux_logs` | `linux_engine` | 7 类 Linux 审计表；当前代码还从这里读取存证表 |
 | `WINDOWS_DB` | `windows_logs` | `windows_engine` | 5 类 Windows 事件表 |
 | `LOG_FUSION_DB` | `log_fusion` | `monitor_engine` | 平台心跳状态 `client_status` |
+| `LOG_HASH_DB` | `log_hash` | `hash_engine` | 原始日志原文 + SHA-256 摘要存证表 `log_hash`（2026-10-11 新增） |
 
-所有连接 URL 使用 `mysql+pymysql` 和 `charset=utf8mb4`，开启 `pool_pre_ping=True` 与 `pool_recycle=1800`。三个库之间没有跨库事务。
+所有连接 URL 使用 `mysql+pymysql` 和 `charset=utf8mb4`，开启 `pool_pre_ping=True` 与 `pool_recycle=1800`。四个库之间没有跨库事务。
 
 ## 2. 连接配置
 
@@ -27,6 +28,8 @@
 | `LINUX_DB` | string | `linux_logs` |
 | `WINDOWS_DB` | string | `windows_logs` |
 | `LOG_FUSION_DB` | string | `log_fusion` |
+| `LOG_HASH_DB` | string | `log_hash`，原始日志存证库 |
+| `LOG_HASH_TABLE` | string | `log_hash`，存证表名 |
 | `RAW_STORAGE_DIR` | string | `data/raw`，当前未参与数据库或文件写入 |
 
 标准启动脚本先切换到 `backend/`，所以默认 `.env` 位置应为 `backend/.env`。仓库当前没有 `.env` 示例文件。
@@ -35,10 +38,11 @@
 
 ## 3. 由 ORM 正式声明的表
 
+`backend/app/models.py` 当前声明两张表：心跳状态 `client_status`（`log_fusion` 库）与原始日志存证 `log_hash`（`log_hash` 库）。`client_status` 由 `create_all(monitor_engine)` 创建，`log_hash` 由启动时的 `create_all(hash_engine, tables=[LogHash.__table__])` 创建；两者建表失败都只记录日志、不中断启动。
+
 ### 3.1 `log_fusion.client_status`
 
 应用启动时执行 `Base.metadata.create_all(monitor_engine)`，当前 Base 只包含这张表。数据库本身必须预先存在；创建失败只记录日志，应用仍继续启动。2026-10-10 只读核验：`log_fusion` 库中确实只有 `client_status` 一张表，实际列与上表一致。
-
 | 字段 | SQLAlchemy 声明 | 空值 | 约束/索引 | 用途 |
 |---|---|---|---|---|
 | `id` | `BIGINT` | 否 | 主键、自增 | 内部记录 ID |
@@ -66,6 +70,48 @@
 - **`AUTO_INCREMENT` 会跳号**：`ON DUPLICATE KEY UPDATE` 同样消耗自增值（先分配 id，撞唯一键再改写），所以 `AUTO_INCREMENT=1857` 只代表累计写过约 1856 次心跳，不代表有 1856 行——行数始终等于去重后的 `client_id` 数量。
 
 watchdog 每 5 秒读取全表并在状态变化时提交。API 响应还会根据 `last_heartbeat` 动态重算状态，数据库 `status` 不是唯一计算来源。
+
+### 3.2 `log_hash.log_hash`（2026-10-11 新增）
+
+原始日志存证表。每条采集记录在写入业务表之前，先按 `sha256(timestamp + 0x1F + log)` 计算摘要，并把 `log` 原文与摘要一起保存，用于事后防篡改校验。可复现 DDL 见 [`docs/sql/log_hash.sql`](./sql/log_hash.sql)。
+
+| 字段 | SQLAlchemy 声明 | 空值 | 约束/索引 | 用途 |
+|---|---|---|---|---|
+| `id` | `BIGINT` | 否 | 主键、自增 | 内部记录 ID |
+| `log_hash` | `VARCHAR(64)` | 否 | **唯一**、索引 | `sha256(timestamp + 0x1F + log)` 的小写十六进制摘要 |
+| `raw_log` | `LONGTEXT` | 否 | 无 | 原始日志正文，取自采集 JSON 的 `log` 字段 |
+| `log_timestamp` | `VARCHAR(64)` | 是 | 无 | **参与哈希的原始时间字符串**，不做归一化，供复算 |
+| `platform` | `VARCHAR(16)` | 是 | 无 | `linux` / `windows` |
+| `source` | `VARCHAR(255)` | 是 | 无 | 采集来源，如 `ubuntu-audit` |
+| `client_id` | `VARCHAR(128)` | 是 | 索引 | 上报客户端标识 |
+| `event_time` | `DATETIME` | 是 | 索引 | 解析后的 UTC 时间，仅用于查询排序，**不参与哈希** |
+| `created_at` | `DATETIME` | 否 | 服务端默认 `NOW()` | 服务端入库时间 |
+
+#### 哈希输入定义（存证可复算的前提）
+
+```
+log_hash = sha256_hex( timestamp原始字符串 + "\x1f" + log原始字符串 )
+```
+
+- 两个字段都取采集端发来的**原始值**：不 trim、不归一化、不做大小写转换、不转义。
+- 分隔符用 US（`0x1F`，Unit Separator）而不是直接拼接，避免
+  `timestamp="...Z" + log="abc"` 与 `timestamp="...Zabc" + log=""` 撞成同一摘要。
+- **`timestamp` 必须参与哈希**：syslog/auditd 里同一台机器在不同时刻产生内容完全相同的行很常见；
+  若只哈希 `log`，这些行会得到同一摘要并被唯一索引吞掉，存证就无法与日志一一对应。
+- **`log` 中的控制字符按原始字节参与哈希**。Linux auditd 的多字段分隔符是 `0x1D`（GS），
+  必须按解码后的字节计算，不能先用 `\u001d` 转义再哈希。
+- **`raw_log` 不做列宽裁剪**（`LONGTEXT`），否则存证与原文不符，哈希无法复算。
+
+#### 写入与去重语义
+
+- 每条接收到的日志写一条存证，`log_hash` 唯一索引保证**同一 `(timestamp, log)` 重复上报**
+  （Fluent Bit 重试）只留一条；唯一键命中按幂等成功处理，不计入失败。
+- 相同内容、不同时间戳的日志会各自成行（摘要不同），业务表与存证表保持一一对应。
+- **`log` 缺失或为空时不写存证**，在采集响应 `errors[]` 里记一条 `stage="hash"`，
+  但**不影响日志入库**：`persisted` 只反映业务表结果。
+- **存证写库失败不影响已入库的日志**：业务表写入先完成，存证独立失败并逐行定位上报。
+- 实测校验（同一 SQL 可在 MySQL 侧复算）：
+  `SHA2(CONCAT(log_timestamp, CHAR(31), raw_log), 256) = log_hash`。
 
 ## 4. `linux_logs` 代码依赖
 

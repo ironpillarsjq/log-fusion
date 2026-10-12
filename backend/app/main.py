@@ -14,12 +14,14 @@ from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import get_settings
-from .db import Base, db_health, linux_engine, monitor_engine, windows_engine, MonitorSessionLocal
-from .models import ClientStatus
+from .db import Base, db_health, hash_engine, linux_engine, monitor_engine, windows_engine, MonitorSessionLocal
+from .models import ClientStatus, LogHash
 from .services import categories, query_category, summary, recent_rows
 from .parsers import normalize_linux, normalize_windows, windows_table_for
+from .hashing import build_evidence_row
 from .ws import ws_manager
 
 logger = logging.getLogger("log_fusion")
@@ -60,6 +62,10 @@ def _ensure_tables() -> None:
         Base.metadata.create_all(monitor_engine)
     except Exception:
         logger.exception("client_status 建表失败（请确认 MySQL 中存在 log_fusion 库）")
+    try:
+        Base.metadata.create_all(hash_engine, tables=[LogHash.__table__])
+    except Exception:
+        logger.exception("log_hash 建表失败（请确认 MySQL 中存在 log_hash 库）")
 
 
 @asynccontextmanager
@@ -382,13 +388,63 @@ def _summary_from_raw(platform: str, record) -> dict:
     }
 
 
+def _persist_evidence(platform: str, records: list, event_times: dict[int, Any]) -> tuple[int, list[dict]]:
+    """为每条采集记录写原始日志存证（log_hash 库）。
+
+    - `log` 缺失/为空 → 记为 `stage="hash"`，**不影响业务表入库**；
+    - 存证库写入失败 → 整批降级为逐行重试定位，仍然只影响存证计数；
+    - `log_hash` 唯一索引命中（同一 timestamp+log 重复上报）按「已存证」处理，不计失败。
+    """
+    prepared: list[tuple[int, dict]] = []
+    errors: list[dict] = []
+    for index, record in enumerate(records):
+        row, error = build_evidence_row(platform, record, event_times.get(index))
+        if row is None:
+            errors.append({"index": index, "stage": "hash", "reason": error})
+            continue
+        prepared.append((index, row))
+    if not prepared:
+        return 0, errors
+
+    def insert_many(items: list[tuple[int, dict]]) -> tuple[int, list[dict]]:
+        stored, failed = 0, []
+        try:
+            with hash_engine.begin() as conn:
+                for _, row in items:
+                    _insert_row(conn, settings.log_hash_table, row)
+            return len(items), []
+        except Exception:
+            logger.warning("存证批量写入失败，改为逐行定位（共 %d 行）", len(items), exc_info=True)
+        for index, row in items:
+            try:
+                with hash_engine.begin() as conn:
+                    _insert_row(conn, settings.log_hash_table, row)
+                stored += 1
+            except IntegrityError:
+                # 唯一键命中：同一条日志已存证过（Fluent Bit 重试），视为成功幂等
+                stored += 1
+            except Exception as exc:
+                failed.append({
+                    "index": index, "stage": "hash",
+                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
+                })
+        return stored, failed
+
+    try:
+        stored, failed = insert_many(prepared)
+    except Exception as exc:
+        return 0, errors + [{"stage": "hash", "reason": f"{type(exc).__name__}: {str(exc)[:300]}"}]
+    return stored, errors + failed
+
+
 def persist_logs(platform: str, records: list) -> dict:
-    """解析 + 入库。解析失败与入库失败分开记录（errors[].stage 为 parse / insert）。"""
+    """解析 + 入库 + 存证。解析失败与入库失败分开记录（errors[].stage 为 parse / insert / hash）。"""
     normalize = normalize_windows if platform == "windows" else normalize_linux
     engine = windows_engine if platform == "windows" else linux_engine
     prepared: list[tuple[int, str, dict]] = []
     parse_errors: list[dict] = []
     summaries: list[dict] = []
+    event_times: dict[int, Any] = {}
     for index, record in enumerate(records):
         row, error = normalize(record)
         if row is None:
@@ -398,12 +454,16 @@ def persist_logs(platform: str, records: list) -> dict:
         table = row["category"] if platform == "linux" else windows_table_for(row.get("channel"))
         prepared.append((index, table, row))
         summaries.append(_summary_from_row(platform, table, row))
+        event_times[index] = row.get("event_time") or row.get("time_created")
     inserted, insert_errors = _persist_rows(engine, prepared)
+    # 存证独立于业务入库：先算哈希存证，再返回结果；存证失败不回滚已入库的日志。
+    hashed, hash_errors = _persist_evidence(platform, records, event_times)
     return {
         "inserted": inserted,
         "skipped": len(parse_errors),
         "failed": len(insert_errors),
-        "errors": sorted(parse_errors + insert_errors, key=lambda item: item["index"]),
+        "hashed": hashed,
+        "errors": sorted(parse_errors + insert_errors + hash_errors, key=lambda item: item["index"]),
         "summaries": summaries,
     }
 
@@ -433,7 +493,8 @@ async def ingest_logs(platform: str, payload: Any = Body(...)):
             await event_queue.put(_summary_from_raw(platform, record))
         return JSONResponse(status_code=200, content={
             "accepted": len(records), "persisted": False, "inserted": 0, "skipped": 0,
-            "failed": len(records), "errors": [{"stage": "persist", "reason": (fatal or "")[:300]}],
+            "failed": len(records), "hashed": 0,
+            "errors": [{"stage": "persist", "reason": (fatal or "")[:300]}],
         })
 
     for summary in result["summaries"]:
@@ -444,6 +505,7 @@ async def ingest_logs(platform: str, payload: Any = Body(...)):
         "inserted": result["inserted"],
         "skipped": result["skipped"],
         "failed": result["failed"],
+        "hashed": result["hashed"],
         "errors": result["errors"],
     })
 

@@ -18,7 +18,7 @@
 |---|---|---|---|
 | GET | `/` | HTML | Jinja2 仪表盘 |
 | GET | `/partials/db-status` | HTML | HTMX 数据库状态片段 |
-| GET | `/health` | JSON | 三库连接健康检查 |
+| GET | `/health` | JSON | 四库连接健康检查 |
 | GET | `/api/v1/logs/categories` | JSON | 日志类别 |
 | GET | `/api/v1/logs/summary` | JSON | 日志总量与分类统计 |
 | GET | `/api/v1/logs/categories/{category}` | JSON | 分类分页查询 |
@@ -46,7 +46,7 @@
 
 ### 3.2 `GET /partials/db-status`
 
-返回 HTML `<span>` 片段，依次显示 `linux_logs`、`windows_logs`、`log_fusion` 是否连接。无参数。
+返回 HTML `<span>` 片段，依次显示 `linux_logs`、`windows_logs`、`log_fusion`、`log_hash` 是否连接。无参数。
 
 示例：
 
@@ -66,7 +66,8 @@
   "databases": {
     "linux_logs": true,
     "windows_logs": true,
-    "log_fusion": false
+    "log_fusion": false,
+    "log_hash": true
   },
   "realtime": {
     "sse_clients": 1,
@@ -285,14 +286,14 @@ Windows 旧字段兼容示例：
 ]
 ```
 
-成功或降级响应均为 HTTP 200，并按“解析”和“入库”分别给出计数：
+成功或降级响应均为 HTTP 200，并按“解析”“入库”“存证”分别给出计数：
 
 ```json
-{"accepted": 2, "persisted": true, "inserted": 2, "skipped": 0, "failed": 0, "errors": []}
+{"accepted": 2, "persisted": true, "inserted": 2, "skipped": 0, "failed": 0, "hashed": 2, "errors": []}
 ```
 
 ```json
-{"accepted": 2, "persisted": false, "inserted": 1, "skipped": 1, "failed": 0,
+{"accepted": 2, "persisted": false, "inserted": 1, "skipped": 1, "failed": 0, "hashed": 1,
  "errors": [{"index": 1, "stage": "parse", "reason": "缺少可解析的时间戳（timestamp / event_time / syslog 行首）"}]}
 ```
 
@@ -302,11 +303,22 @@ Windows 旧字段兼容示例：
 - `inserted`：真正写入数据库的行数。
 - `skipped`：解析阶段被拒绝的记录数（`errors[].stage = "parse"`）。
 - `failed`：入库阶段失败的记录数（`errors[].stage = "insert"`，`reason` 为数据库错误摘要）。
-- `persisted`：仅当 `skipped == 0` 且 `failed == 0` 时为 `true`。
+- `hashed`：成功写入 `log_hash.log_hash` 存证表的条数（含唯一键命中的幂等重复上报）。
+- `persisted`：仅当 `skipped == 0` 且 `failed == 0` 时为 `true`。**存证失败或跳过不影响该字段**。
 - 整批写入失败时会退化为逐行重试，因此 `errors[].index` 能定位到具体记录。
 - 解析规则：Linux 支持 `normalized` 载荷、auditd 行（`type=... msg=audit(...)`，按类型映射到 7 张表）与 syslog 行；Windows 支持 Fluent Bit winlog JSON（`TimeGenerated`/`EventID`/`Channel`/`Data` 等）。时间统一转成 UTC。
 - 数据库错误摘要最多保留 300 字符；没有幂等键或重试令牌。
 - SSE 队列满时 `put()` 会等待，因而响应可能延迟。
+
+#### 原始日志存证
+
+在写入业务表之后、返回响应之前，接口会为每条记录写一条 `log_hash.log_hash` 存证行（见 `docs/DATABASE.md` §3.2）：
+
+- 摘要定义：`sha256( timestamp原始字符串 + 0x1F + log原始字符串 )`，小写十六进制 64 位。
+- 两个字段都取请求里的**原始值**，不 trim、不归一化、不转义；`log` 中的控制字符（如 auditd 的 `0x1D`）按原始字节参与哈希。
+- `log_hash` 列有唯一索引：同一 `(timestamp, log)` 重复上报只留一条存证，按幂等成功计入 `hashed`。
+- 记录缺少 `log` 字段或内容为空时**跳过存证**，追加一条 `errors[].stage = "hash"`，日志本身仍正常入库。
+- 存证库写入失败时逐行定位并记入 `errors[].stage = "hash"`；**已入库的业务日志不会被回滚**。
 
 ### 5.2 `GET /api/v1/logs/stream`
 
