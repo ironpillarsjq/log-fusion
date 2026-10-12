@@ -4,6 +4,74 @@
 
 ## Unreleased
 
+### Fixed — 2026-10-12（存证故障被伪装成「0 条」与「已存证」）
+
+排查「存证页显示 0 条、但数据库里明明有数据」时发现的两个缺陷，都属于
+「故障被伪装成正常」，正是本项目文档反复强调要避免的模式：
+
+- **`/api/v1/evidence/summary`、`/api/v1/evidence`、`/api/v1/evidence/export`
+  把数据库异常吞掉并返回 `total: 0` / 空列表 / 空 CSV。** 结果是「存证库连不上」
+  和「确实没有存证」在页面上完全一样，操作者会误以为数据被归档清空了。
+  现在改为记录日志并返回 **503**，前端会弹出错误提示而不是显示一个自信的 `0`。
+- **`_persist_evidence` 把所有 `IntegrityError` 都当成「重复上报」计为存证成功。**
+  MySQL 下 NOT NULL 违反等真实错误同样抛 `IntegrityError`，只有 errno **1062**
+  才代表唯一键冲突。现在新增 `_is_duplicate_key()` 按 errno 判定（驱动未提供
+  errno 时按 `Duplicate entry` 文本兜底），非重复的完整性错误如实计入
+  `errors[].stage="hash"`，不再让存证静默丢失却报 `hashed` 正常。
+- 新增 **`tools/restore_archive.py`**：把归档 CSV 导回 `log_hash` 表（默认只预览，
+  `--apply` 才写库；靠唯一索引幂等跳过已有记录，`created_at` 按 CSV 原值写入，
+  这样回灌后按入库时间的归档判断与原始状态一致）。批量提交（1000 行/批），
+  实测 34099 行约 40 秒；重复执行同一文件新增 0 行。归档是「导出后删除」，
+  此工具用于归档误删后的恢复或继续测试。
+  - 计数用**表行数差值**而非 `rowcount`：驱动可能开启 `CLIENT_FOUND_ROWS`，
+    那样「命中已有行」也会被算成 1，导致把跳过误报成新增。
+- 文档：`docs/API.md` §7.1/§7.2/§7.3 明确 503 语义并记录 `evidence/export`
+  不含 `raw_log`；`docs/README.md` 补恢复工具用法；`docs/DATABASE.md` §7 补异常行为行。
+- 测试：新增 6 个用例（503 语义、errno 1062 判定、非重复完整性错误必须计入 failed，
+  含 1048/1406 与文本兜底）。测试总数 159 → 166。
+
+### Added — 2026-10-11（存证归档导出 + 删除、存证页改用 log_hash、列表分页）
+
+- **存证归档（导出并删除）**，新增 `backend/app/archive.py`：
+  - **自动归档**：导出 `created_at` 早于 `archive_retention_months`（默认 3）个**日历月**的全部存证，
+    再从数据库删除。按 `created_at`（入库时间）而非 `event_time` 判断——否则客户端补传的
+    历史日志会刚入库就被归档掉。后台任务每天执行一次，启动后延迟 60 秒跑第一次。
+  - **手动归档**：选择时间区间（`start`/`end`，`YYYY-MM-DD`）导出后删除。
+  - CSV 均为 UTF-8 带 BOM（Excel 直接可读），列为
+    `id, log_hash, log_timestamp, platform, source, client_id, event_time, created_at, raw_log`，
+    **含 log 原文**；文件永久保留在 `archive_dir`（默认 `data/archive`），不做自动清理。
+  - **安全流程**：选 id → 分批取行 → 流式写 CSV → `flush`+`fsync` → 校验文件存在、大小 > 0、
+    行数与 id 数一致 → **才**执行 `DELETE`。任一步失败立即中止，**一条都不删**。
+  - 用**明确的 id 列表**删除，而不是 `DELETE WHERE created_at < X`：否则归档期间新写入、
+    同样满足条件的记录会被误删。
+  - 新增归档台账表 `log_fusion.archive_log`：记录 `mode`/`file_path`/`row_count`/`deleted_count`/
+    `file_sha256`/时间区间。删除不可逆，台账是事后追溯的唯一依据；台账写入失败不影响已完成的归档。
+- **存证页改用真实的 `log_hash` 表**（原先读的 `linux_logs.audit_log_evidence` 在真实库中不存在，
+  页面永远是空的）：`/api/v1/evidence` 三个接口全部改读 `log_hash`，`_evidence_rows()` 删除，
+  `status` 过滤参数与 `verify_status`/`evidence_id`/`raw_hash` 等模板字段移除。
+  分页改为数据库侧 `LIMIT/OFFSET`（原先一次性取回再在 Python 切片，且只覆盖最近 1000 条）。
+- **列表分页**：融合日志与存证列表均为一页 **30 条**，带上一页/下一页与「共 N 条，第 X / Y 页」。
+  融合日志之前 `page` 写死为 1（后端本来就支持分页，只是没用），切换平台/类别/关键词时会回到第 1 页。
+- **归档目录锚定仓库根**：`archive_dir` 默认是相对路径，而相对路径按进程工作目录解析——
+  从 `backend/` 启动和从仓库根启动会写到不同位置，台账里记的路径也随之变化。
+  现在统一按仓库根展开为绝对路径（实测修复前文件落在 `backend/data/archive`）。
+- 新增 `tests/test_archive.py`（21 个用例）锁住删除场景的关键不变量：落盘失败不删、
+  行数不一致中止、0 字节文件中止、CSV 记录集合等于被删 id 集合、空结果不建文件、
+  按 id 删除、日历月回退（含 3-31 → 2-28 收敛）、台账失败被吞掉、CSV 逗号/引号转义。测试总数 138 → 159。
+- `config.py` 新增 `ARCHIVE_DIR`、`ARCHIVE_RETENTION_MONTHS`、`ARCHIVE_BATCH_LIMIT`；
+  `models.py` 新增 `ArchiveLog`。
+- 接口新增 4 条：`GET /api/v1/archive/preview`、`POST /api/v1/archive/manual`、
+  `POST /api/v1/archive/auto`、`GET /api/v1/archive/log`；接口总数 19 → 23。
+- 同步文档：`docs/API.md` §2/§7（新增 §7.4～§7.7 与归档安全流程）、
+  `docs/DATABASE.md` §1/§3.3/§6/§9/§10、`docs/ARCHITECTURE.md` §1/§2、`docs/README.md`。
+- **数据库变化**：新增表 `log_fusion.archive_log`（启动时自动创建）；`log_hash.log_hash` 结构未变。
+- **接口变化**：`/api/v1/evidence` 增 `platform`/`keyword` 参数、`size` 默认 20→30、响应增 `pages`、
+  移除 `status`；`/api/v1/evidence/export` 增筛选参数、移除 `status`。
+- 实测（2026-10-12，真实库）：`log_hash` 表 34099 条整日归档导出 13,746,826 字节 CSV，
+  CSV 解析器读回 34099 条、`raw_log` 无空值、`log_hash` 全 64 位，数据库剩余 0 条，
+  台账 `rows=34099 deleted=34099`，文件 SHA-256 与接口返回值一致。
+  分页实测：存证 35 条 → 第 1 页 30 条 / 第 2 页 5 条，两页无重叠且覆盖全部。
+
 ### Added — 2026-10-11（原始日志 SHA-256 存证入库）
 
 - 新增第四个逻辑库 `log_hash` 与存证表 `log_hash.log_hash`：每条采集日志在写入业务表之前，

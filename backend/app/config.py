@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     app_name: str = "Log Fusion"
-    db_host: str = "100.107.214.72"
+    db_host: str = "192.168.5.6"
     db_port: int = 3306
     db_user: str = "root"
     db_password: str = "mysql_YbJWfE"
@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     log_hash_db: str = "log_hash"
     log_hash_table: str = "log_hash"
     raw_storage_dir: str = "data/raw"
+    # 存证归档目录：自动/手动导出的 CSV 永久保留在这里，不做自动清理
+    archive_dir: str = "data/archive"
+    # 自动归档：超过该月数的存证（按 created_at 算）会被导出并删除；<=0 表示不启用
+    archive_retention_months: int = 3
+    # 每次归档最多处理的行数，避免单次把整表拉进内存
+    archive_batch_limit: int = 200000
 
     @property
     def mysql_base(self) -> str:

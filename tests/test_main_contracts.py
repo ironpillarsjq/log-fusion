@@ -74,8 +74,8 @@ def test_documented_routes_match_application():
 
 
 def test_documented_route_count():
-    """docs/API.md §2 的接口总表当前有 19 条；新增/删除接口时同步更新此断言。"""
-    assert len(_documented_routes()) == 19
+    """docs/API.md §2 的接口总表当前有 23 条；新增/删除接口时同步更新此断言。"""
+    assert len(_documented_routes()) == 23
 
 
 # --- 心跳状态阈值与载荷 -------------------------------------------------------
@@ -361,3 +361,100 @@ def test_app_js_does_not_open_eventsource(client):
 def test_app_js_is_requested_with_cache_busting_token(client):
     """app.js 带版本参数：旧浏览器缓存过无 no-store 头的副本，需要一次强制定位。"""
     assert "/static/app.js?v=" in client.get("/").text
+
+
+# --- 存证查询失败必须可见，不能伪装成「0 条」---------------------------------
+
+@pytest.mark.parametrize("url", [
+    "/api/v1/evidence/summary",
+    "/api/v1/evidence?page=1&size=30",
+])
+def test_evidence_query_failure_returns_503_not_zero(client, url):
+    """存证库查询失败时返回 503。
+
+    曾经把异常吞掉并返回 `total: 0`，结果「库连不上」和「确实没有存证」
+    在页面上完全一样，操作者会以为数据被清空了。conftest 已禁用 Engine.connect，
+    因此这里天然模拟了数据库不可用。
+    """
+    response = client.get(url)
+    assert response.status_code == 503
+    assert "存证库查询失败" in response.json()["detail"]
+
+
+def test_evidence_export_failure_returns_503(client):
+    """导出同样不能把故障伪装成空 CSV（否则会得到一个看似正常的空文件）。"""
+    response = client.get("/api/v1/evidence/export")
+    assert response.status_code == 503
+
+
+# --- 存证幂等判定：只有唯一键冲突才算「已存证过」------------------------------
+
+class _FakeDbError(Exception):
+    """模拟驱动层异常：args[0] 是 MySQL errno。"""
+
+    def __init__(self, errno, message="boom"):
+        super().__init__(errno, message)
+
+
+class _FakeConnection:
+    def execute(self, *args, **kwargs):
+        return None
+
+
+class _FakeTransaction:
+    def __enter__(self):
+        return _FakeConnection()
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _FakeEngine:
+    def begin(self):
+        return _FakeTransaction()
+
+
+def test_is_duplicate_key_only_accepts_errno_1062():
+    from sqlalchemy.exc import IntegrityError
+
+    assert main._is_duplicate_key(IntegrityError("s", {}, _FakeDbError(1062))) is True
+    # 1048 = NOT NULL 违反：绝不能当成「已经存证过」
+    assert main._is_duplicate_key(IntegrityError("s", {}, _FakeDbError(1048))) is False
+    assert main._is_duplicate_key(IntegrityError("s", {}, _FakeDbError(1406))) is False
+
+
+def test_is_duplicate_key_falls_back_to_message():
+    from sqlalchemy.exc import IntegrityError
+
+    assert main._is_duplicate_key(IntegrityError("s", {}, _FakeDbError(None, "Duplicate entry 'x' for key"))) is True
+    assert main._is_duplicate_key(IntegrityError("s", {}, _FakeDbError(None, "Column cannot be null"))) is False
+
+
+@pytest.mark.parametrize("errno,expect_stored,expect_failed", [
+    (1062, 1, 0),   # 唯一键冲突 → 重复上报，幂等成功
+    (1048, 0, 1),   # NOT NULL 违反 → 真实失败，必须上报
+])
+def test_persist_evidence_distinguishes_duplicate_from_real_failure(
+    monkeypatch, errno, expect_stored, expect_failed
+):
+    """只有重复上报才算成功；其他完整性错误必须计入 failed。
+
+    若不加区分地把所有 IntegrityError 当成幂等成功，存证会静默丢失而接口
+    仍报 hashed 正常——故障被伪装成成功。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    def boom(conn, table, row):
+        raise IntegrityError("INSERT ...", {}, _FakeDbError(errno))
+
+    monkeypatch.setattr(main, "hash_engine", _FakeEngine())
+    monkeypatch.setattr(main, "_insert_row", boom)
+
+    record = {"log": "type=PATH msg=audit(1.1:1): x", "timestamp": "2026-10-12T00:00:00Z"}
+    stored, errors = main._persist_evidence("linux", [record], {0: None})
+
+    assert stored == expect_stored
+    assert len(errors) == expect_failed
+    if expect_failed:
+        assert errors[0]["stage"] == "hash"
+        assert "完整性约束失败" in errors[0]["reason"]

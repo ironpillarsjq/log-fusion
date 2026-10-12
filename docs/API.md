@@ -33,8 +33,12 @@
 | POST | `/api/v1/heartbeat` | JSON | 心跳上报 |
 | WebSocket | `/ws/client-monitor` | WS | 客户端状态快照广播 |
 | GET | `/api/v1/evidence/summary` | JSON | 存证状态摘要 |
-| GET | `/api/v1/evidence` | JSON | 存证列表 |
-| GET | `/api/v1/evidence/export` | CSV | 存证导出 |
+| GET | `/api/v1/evidence` | JSON | 存证列表（分页） |
+| GET | `/api/v1/evidence/export` | CSV | 存证导出（只读，不删除） |
+| GET | `/api/v1/archive/preview` | JSON | 归档预览：只统计待归档条数 |
+| POST | `/api/v1/archive/manual` | JSON | 手动归档：导出区间存证后删除 |
+| POST | `/api/v1/archive/auto` | JSON | 立即执行一次自动归档 |
+| GET | `/api/v1/archive/log` | JSON | 归档台账列表 |
 
 ## 3. 页面与健康接口
 
@@ -512,31 +516,32 @@ data: {"serverTime":"2026-10-10T08:00:20+00:00"}
 
 服务端随后等待客户端文本帧，仅用于检测断开；客户端可以不发送业务消息。没有应用级 ping 消息、订阅参数或鉴权，保活依赖每 5 秒的周期快照（页面以 20 秒无消息判定假死）。每次单连接发送等待上限 10 秒，失败连接会被移除。连接集合只存在于当前进程。
 
-## 7. 存证兼容接口
+## 7. 存证与归档接口
 
-三条接口都先从 `linux_logs.audit_log_evidence` 读取按 `received_at` 倒序的最近 1000 条。表缺失、连接失败或 SQL 异常会被吞掉并表现为空数据。
+> 2026-10-11 起，本节三条接口改为读取 `log_hash.log_hash`（原始日志 SHA-256 存证表）。
+> 原先读取的 `linux_logs.audit_log_evidence` 表在真实库中并不存在，接口必然返回空数据；
+> 旧的 `status` 过滤参数与 `verify_status` 字段一并移除。
 
 ### 7.1 `GET /api/v1/evidence/summary`
 
-无参数。只统计四个已知状态：
+无参数。直接对存证表做 `COUNT(*)`：
 
 ```json
 {
   "code": 0,
   "message": "ok",
   "data": {
-    "total": 0,
-    "statuses": {
-      "VALID": 0,
-      "HASH_MISMATCH": 0,
-      "RAW_MISSING": 0,
-      "PENDING": 0
-    }
+    "total": 128,
+    "statuses": { "VALID": 128, "HASH_MISMATCH": 0, "RAW_MISSING": 0, "PENDING": 0 }
   }
 }
 ```
 
-`total` 是最近 1000 条查询结果的数量，不是数据库全表总数。
+- `total` 是存证表当前的真实行数（旧实现只统计「最近 1000 条」，不是全表总数）。
+- `VALID` 等于 `total`：存证是入库前计算并校验写入的，不存在待校验状态；
+  篡改检测需要按 §3.2 的 SQL 复算，接口暂不提供逐条校验。
+- 查询失败时返回 **503** 并记录日志（**不再返回 `total: 0`**）：把数据库故障降级成
+  「0 条存证」会让「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被归档清空了。
 
 ### 7.2 `GET /api/v1/evidence`
 
@@ -544,35 +549,109 @@ data: {"serverTime":"2026-10-10T08:00:20+00:00"}
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---:|---|
-| `page` | integer | `1` | 切片起点使用 `max(1, page)`，但响应会回显原始 page |
-| `size` | integer | `20` | 1～100；越界返回 422 |
-| `status` | string/null | null | 对 `verify_status` 做大小写敏感精确过滤；无枚举校验 |
+| `page` | integer | `1` | `max(1, page)` |
+| `size` | integer | `30` | 1～100；越界返回 422 |
+| `platform` | string/null | null | 精确匹配 `platform`（`linux`/`windows`） |
+| `keyword` | string/null | null | 对 `raw_log`/`client_id`/`source`/`log_hash` 做 `LIKE` 模糊匹配 |
 
 ```json
 {
   "code": 0,
   "message": "ok",
+  "data": { "items": [], "page": 1, "size": 30, "total": 0, "pages": 0 }
+}
+```
+
+- 现在由数据库侧 `LIMIT/OFFSET` 真分页（旧实现一次性取回全部再在 Python 切片）。
+- `items` 每项字段固定为：`id`、`log_timestamp`、`platform`、`source`、`client_id`、
+  `event_time`、`created_at`、`log_hash`；**不返回 `raw_log` 原文**，避免列表响应过大。
+- 查询失败时返回 **503**（同 §7.1），不返回空列表冒充「没有数据」。
+
+### 7.3 `GET /api/v1/evidence/export`
+
+只读导出（**不删除**任何记录）；删除请走 §7.4～§7.6 的归档接口。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---:|---|
+| `platform` | string/null | null | 同 §7.2 |
+| `keyword` | string/null | null | 同 §7.2 |
+| `size` | integer | `10000` | 1～100000，单次导出上限 |
+
+- HTTP 200，`Content-Type: text/csv`
+- `Content-Disposition: attachment; filename="log-hash-evidence.csv"`
+- UTF-8 BOM；列顺序 `id, log_hash, log_timestamp, platform, source, client_id, event_time, created_at`
+  （**不含 `raw_log`**；需要原文请用归档接口导出的 CSV，它包含全部列）
+- 查询失败时返回 **503**，不会返回一个看似正常的空 CSV
+
+### 7.4 `GET /api/v1/archive/preview`
+
+只统计、不导出、不删除，供前端二次确认。查询参数 `start`、`end`（`YYYY-MM-DD`，按 `created_at` 本地时间口径；
+`end` 自动取当天 23:59:59）。日期格式错误返回 400。
+
+```json
+{
+  "code": 0, "message": "ok",
   "data": {
-    "items": [],
-    "page": 1,
-    "size": 20,
-    "total": 0
+    "mode": "manual", "candidates": 42, "exported": 0, "deleted": 0,
+    "file": null, "fileSha256": null, "dryRun": true,
+    "retentionMonths": 3, "archiveDir": "data/archive"
   }
 }
 ```
 
-items 使用 `SELECT *` 的数据库字段原样返回，仓库没有正式响应模型。
+### 7.5 `POST /api/v1/archive/manual`
 
-### 7.3 `GET /api/v1/evidence/export`
+手动归档：把指定区间的存证导出为 CSV，**确认文件落盘后**再从数据库删除。
 
-无查询参数。返回最近 1000 条存证记录的 CSV：
+请求体：
 
-- HTTP 200
-- `Content-Type: text/csv`
-- `Content-Disposition: attachment; filename="audit-evidence.csv"`
-- UTF-8 BOM
+```json
+{"start": "2026-07-01", "end": "2026-07-31", "confirm": true}
+```
 
-接口不支持 legacy 契约中的条件筛选；没有数据或查询失败时只返回 BOM。
+- `confirm` 必须为 `true`，否则返回 400（防误触）。
+- `start`/`end` 至少给一个；`start > end` 返回 400。
+- 成功响应：
+
+```json
+{
+  "code": 0, "message": "ok",
+  "data": {
+    "mode": "manual", "candidates": 42, "exported": 42, "deleted": 42,
+    "file": "data/archive/log_hash_manual_20261011_141500.csv",
+    "fileSha256": "…64 位小写十六进制…", "dryRun": false
+  }
+}
+```
+
+- 失败时返回 **500**，且**不会删除任何记录**（响应 detail 说明失败原因）。
+- 导出文件永久保留在 `archive_dir`，不做自动清理。
+
+### 7.6 `POST /api/v1/archive/auto`
+
+立即执行一次自动归档的逻辑（与后台每日任务相同）：导出并删除
+`created_at < 当前时间 - archive_retention_months 个日历月` 的全部存证。
+
+- `archive_retention_months <= 0` 时返回 `{"enabled": false}`，不做任何事。
+- 成功响应的 `data` 在 §7.5 基础上多 `enabled` 与 `cutoff` 两个字段。
+
+### 7.7 `GET /api/v1/archive/log`
+
+归档台账，分页参数 `page`（默认 1）、`size`（默认 30，1～100）。字段：
+`id`、`mode`（`auto`/`manual`）、`file_path`、`row_count`、`deleted_count`、
+`file_sha256`、`range_start`、`range_end`、`before_time`、`created_at`。
+
+由于删除不可逆，台账是事后追溯「哪些记录在什么时候被导出到哪里」的唯一依据。
+
+#### 归档安全流程
+
+1. 按条件只查 **id 列表**（`archive_batch_limit` 限制单次行数）；
+2. 按 id 分批取完整行并流式写 CSV；
+3. `flush` + `fsync` 落盘，校验文件存在、大小 > 0、行数与 id 数一致；
+4. **任一步失败立即中止，绝不执行 DELETE**；
+5. 用**明确的 id 列表**删除（不是 `DELETE WHERE created_at < X`），
+   避免归档期间新写入、同样满足条件的记录被误删；
+6. 删除成功后写一条 `archive_log` 台账；台账写入失败不影响已完成的归档。
 
 ## 8. 当前未实现的旧契约接口
 

@@ -17,11 +17,12 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import get_settings
-from .db import Base, db_health, hash_engine, linux_engine, monitor_engine, windows_engine, MonitorSessionLocal
+from .db import Base, db_health, hash_engine, linux_engine, monitor_engine, windows_engine, MonitorSessionLocal, one, rows
 from .models import ClientStatus, LogHash
 from .services import categories, query_category, summary, recent_rows
 from .parsers import normalize_linux, normalize_windows, windows_table_for
 from .hashing import build_evidence_row
+from .archive import archive_evidence, archive_root, months_ago
 from .ws import ws_manager
 
 logger = logging.getLogger("log_fusion")
@@ -61,23 +62,55 @@ def _ensure_tables() -> None:
     try:
         Base.metadata.create_all(monitor_engine)
     except Exception:
-        logger.exception("client_status 建表失败（请确认 MySQL 中存在 log_fusion 库）")
+        logger.exception("平台表建表失败（请确认 MySQL 中存在 log_fusion 库）")
     try:
         Base.metadata.create_all(hash_engine, tables=[LogHash.__table__])
     except Exception:
         logger.exception("log_hash 建表失败（请确认 MySQL 中存在 log_hash 库）")
 
 
+# 自动归档每天跑一次的间隔（秒）；启动后先等一小段再跑第一次，避免和建表抢时间
+ARCHIVE_INTERVAL_SECONDS = 24 * 60 * 60
+ARCHIVE_STARTUP_DELAY_SECONDS = 60
+
+
+async def _auto_archive_loop() -> None:
+    """后台自动归档：把超过保留期（默认 3 个日历月）的存证导出后删除。
+
+    只按 `created_at` 判断（入库时间），不用 `event_time`——否则客户端补传的
+    历史日志会刚入库就被归档掉。导出成功并校验落盘后才删除，任何失败都不删。
+    """
+    await asyncio.sleep(ARCHIVE_STARTUP_DELAY_SECONDS)
+    while True:
+        months = settings.archive_retention_months
+        if months > 0:
+            cutoff = months_ago(months)
+            try:
+                info = await asyncio.to_thread(
+                    archive_evidence, mode="auto", before=cutoff
+                )
+                if info.get("deleted"):
+                    logger.info(
+                        "自动归档完成：删除 %s 条（早于 %s），文件 %s",
+                        info["deleted"], cutoff, info.get("file"),
+                    )
+            except Exception:
+                logger.exception("自动归档失败，本次不删除任何记录")
+        await asyncio.sleep(ARCHIVE_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _ensure_tables()
     watchdog = asyncio.create_task(_status_watchdog())
+    archiver = asyncio.create_task(_auto_archive_loop())
     try:
         yield
     finally:
-        watchdog.cancel()
-        with suppress(asyncio.CancelledError):
-            await watchdog
+        for task in (watchdog, archiver):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app.router.lifespan_context = lifespan
@@ -388,6 +421,23 @@ def _summary_from_raw(platform: str, record) -> dict:
     }
 
 
+def _is_duplicate_key(exc: Exception) -> bool:
+    """判断 IntegrityError 是否为「唯一键冲突」（MySQL 1062）。
+
+    MySQL 下所有完整性错误都表现为 `IntegrityError`，只有 errno 1062 才代表
+    「这条记录已经存在」。若不加区分地当成重复，NOT NULL 违反等真实错误会被
+    静默计为存证成功。
+    """
+    orig = getattr(exc, "orig", None)
+    if orig is not None and getattr(orig, "args", None):
+        try:
+            return int(orig.args[0]) == 1062
+        except (TypeError, ValueError):
+            pass
+    # 兜底：驱动未提供 errno 时按错误文本判断
+    return "Duplicate entry" in str(exc)
+
+
 def _persist_evidence(platform: str, records: list, event_times: dict[int, Any]) -> tuple[int, list[dict]]:
     """为每条采集记录写原始日志存证（log_hash 库）。
 
@@ -420,9 +470,18 @@ def _persist_evidence(platform: str, records: list, event_times: dict[int, Any])
                 with hash_engine.begin() as conn:
                     _insert_row(conn, settings.log_hash_table, row)
                 stored += 1
-            except IntegrityError:
-                # 唯一键命中：同一条日志已存证过（Fluent Bit 重试），视为成功幂等
-                stored += 1
+            except IntegrityError as exc:
+                # 只有**唯一键冲突**才是「同一条日志已存证过」（Fluent Bit 重试），才算幂等成功。
+                # 其他完整性错误（NOT NULL 违反等）必须如实上报：把它们当成成功会让
+                # 存证静默丢失，而接口却报 hashed 正常——正是本文件反复强调要避免的
+                # 「故障被伪装成成功」。
+                if _is_duplicate_key(exc):
+                    stored += 1
+                else:
+                    failed.append({
+                        "index": index, "stage": "hash",
+                        "reason": f"完整性约束失败（非重复上报）：{type(exc).__name__}: {str(exc)[:300]}",
+                    })
             except Exception as exc:
                 failed.append({
                     "index": index, "stage": "hash",
@@ -521,35 +580,173 @@ def export_logs(platform: str = "Linux", category: str = "authentication_session
     return StreamingResponse(iter(["\ufeff" + output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{category}.csv"'})
 
 
-def _evidence_rows() -> list[dict]:
-    try:
-        with linux_engine.connect() as conn:
-            return [dict(row) for row in conn.execute(text("SELECT * FROM audit_log_evidence ORDER BY received_at DESC LIMIT 1000")).mappings()]
-    except Exception:
-        return []
+EVIDENCE_COLUMNS = ("id", "log_timestamp", "platform", "source", "client_id", "event_time", "created_at", "log_hash")
+
+
+def _evidence_where(platform: str | None, keyword: str | None) -> tuple[str, dict]:
+    conditions, params = [], {}
+    if platform:
+        conditions.append("platform = :platform")
+        params["platform"] = platform
+    if keyword:
+        conditions.append("(raw_log LIKE :keyword OR client_id LIKE :keyword OR source LIKE :keyword OR log_hash LIKE :keyword)")
+        params["keyword"] = f"%{keyword}%"
+    return (" WHERE " + " AND ".join(conditions) if conditions else ""), params
+
+
+def _evidence_table() -> str:
+    return f"`{settings.log_hash_db}`.`{settings.log_hash_table}`"
 
 
 @app.get("/api/v1/evidence/summary")
 def evidence_summary():
-    items = _evidence_rows()
-    statuses = {status: sum(1 for item in items if item.get("verify_status") == status) for status in ("VALID", "HASH_MISMATCH", "RAW_MISSING", "PENDING")}
-    return {"code": 0, "message": "ok", "data": {"total": len(items), "statuses": statuses}}
+    """存证摘要：直接对 log_hash 表做 COUNT，不再受单次取数上限影响。
+
+    查询失败时返回 **503** 而不是 0：把数据库故障降级成「0 条存证」会让
+    「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被清空了。
+    """
+    try:
+        total = one(hash_engine, f"SELECT COUNT(*) AS n FROM {_evidence_table()}")["n"]
+    except Exception as exc:
+        logger.exception("存证摘要查询失败")
+        raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
+    statuses = {"VALID": total, "HASH_MISMATCH": 0, "RAW_MISSING": 0, "PENDING": 0}
+    return {"code": 0, "message": "ok", "data": {"total": total, "statuses": statuses}}
 
 
 @app.get("/api/v1/evidence")
-def evidence_list(page: int = 1, size: int = Query(20, ge=1, le=100), status: str | None = None):
-    items = _evidence_rows()
-    if status:
-        items = [item for item in items if item.get("verify_status") == status]
-    start = (max(1, page) - 1) * size
-    return {"code": 0, "message": "ok", "data": {"items": items[start:start + size], "page": page, "size": size, "total": len(items)}}
+def evidence_list(
+    page: int = 1,
+    size: int = Query(30, ge=1, le=100),
+    platform: str | None = None,
+    keyword: str | None = None,
+):
+    """存证分页列表：数据库侧 LIMIT/OFFSET 分页，不再全量取回后在 Python 切片。"""
+    page = max(1, page)
+    where, params = _evidence_where(platform, keyword)
+    table = _evidence_table()
+    selected = ", ".join(f"`{name}`" for name in EVIDENCE_COLUMNS)
+    try:
+        total = one(hash_engine, f"SELECT COUNT(*) AS n FROM {table}{where}", params)["n"]
+        items = rows(
+            hash_engine,
+            f"SELECT {selected} FROM {table}{where} ORDER BY id DESC LIMIT :limit OFFSET :offset",
+            dict(params, limit=size, offset=(page - 1) * size),
+        )
+    except Exception as exc:
+        logger.exception("存证列表查询失败")
+        raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
+    return {"code": 0, "message": "ok", "data": {
+        "items": items, "page": page, "size": size, "total": total,
+        "pages": (total + size - 1) // size if size else 0,
+    }}
 
 
 @app.get("/api/v1/evidence/export")
-def evidence_export():
-    items = _evidence_rows()
+def evidence_export(platform: str | None = None, keyword: str | None = None, size: int = Query(10000, ge=1, le=100000)):
+    """存证 CSV 导出（只读，不删除）。删除请走 /api/v1/archive/manual。"""
+    where, params = _evidence_where(platform, keyword)
+    table = _evidence_table()
+    selected = ", ".join(f"`{name}`" for name in EVIDENCE_COLUMNS)
+    try:
+        items = rows(
+            hash_engine,
+            f"SELECT {selected} FROM {table}{where} ORDER BY id DESC LIMIT :limit",
+            dict(params, limit=size),
+        )
+    except Exception as exc:
+        logger.exception("存证导出查询失败")
+        raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
     output = io.StringIO()
-    if items:
-        writer = csv.DictWriter(output, fieldnames=list(items[0]), extrasaction="ignore")
-        writer.writeheader(); writer.writerows(items)
-    return StreamingResponse(iter(["\ufeff" + output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="audit-evidence.csv"'})
+    writer = csv.DictWriter(output, fieldnames=list(EVIDENCE_COLUMNS), extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(items)
+    return StreamingResponse(
+        iter(["\ufeff" + output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="log-hash-evidence.csv"'},
+    )
+
+
+# --- 存证归档（导出 + 删除）---------------------------------------------------
+
+def _parse_date(value: str | None, *, end_of_day: bool = False) -> datetime | None:
+    """把 `YYYY-MM-DD` 解析成当天 00:00:00 / 23:59:59（本地时间，与 created_at 同口径）。"""
+    if not value:
+        return None
+    try:
+        day = datetime.strptime(value.strip(), "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+    return day.replace(hour=23, minute=59, second=59) if end_of_day else day
+
+
+@app.get("/api/v1/archive/preview")
+def archive_preview(start: str | None = None, end: str | None = None):
+    """只统计将要归档的条数，不导出、不删除（前端二次确认用）。"""
+    info = archive_evidence(
+        mode="manual", start=_parse_date(start), end=_parse_date(end, end_of_day=True), dry_run=True
+    )
+    return {"code": 0, "message": "ok", "data": dict(
+        info,
+        retentionMonths=settings.archive_retention_months,
+        archiveDir=str(archive_root()),
+    )}
+
+
+@app.post("/api/v1/archive/manual")
+def archive_manual(payload: dict = Body(...)):
+    """手动归档：导出指定时间区间的存证为 CSV，确认落盘后删除对应记录。
+
+    请求体：`{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "confirm": true}`
+    `confirm` 必须为 true，避免误触删除。
+    """
+    if not payload.get("confirm"):
+        raise HTTPException(400, "需要 confirm=true 才会执行导出并删除")
+    start = _parse_date(payload.get("start"))
+    end = _parse_date(payload.get("end"), end_of_day=True)
+    if start is None and end is None:
+        raise HTTPException(400, "请至少指定开始或结束日期")
+    if start and end and start > end:
+        raise HTTPException(400, "开始日期不能晚于结束日期")
+    try:
+        info = archive_evidence(mode="manual", start=start, end=end)
+    except Exception as exc:
+        logger.exception("手动归档失败")
+        raise HTTPException(500, f"归档失败（未删除任何记录）：{type(exc).__name__}: {str(exc)[:200]}")
+    return {"code": 0, "message": "ok", "data": info}
+
+
+@app.get("/api/v1/archive/log")
+def archive_log(page: int = 1, size: int = Query(30, ge=1, le=100)):
+    """归档台账列表。"""
+    page = max(1, page)
+    selected = ("id", "mode", "file_path", "row_count", "deleted_count", "file_sha256",
+                "range_start", "range_end", "before_time", "created_at")
+    columns = ", ".join(f"`{name}`" for name in selected)
+    try:
+        with MonitorSessionLocal() as db:
+            total = db.execute(text("SELECT COUNT(*) FROM `archive_log`")).scalar() or 0
+            items = [dict(row) for row in db.execute(
+                text(f"SELECT {columns} FROM `archive_log` ORDER BY id DESC LIMIT :limit OFFSET :offset"),
+                {"limit": size, "offset": (page - 1) * size},
+            ).mappings()]
+    except Exception:
+        logger.exception("归档台账查询失败")
+        total, items = 0, []
+    return {"code": 0, "message": "ok", "data": {"items": items, "page": page, "size": size, "total": total}}
+
+
+@app.post("/api/v1/archive/auto")
+def archive_auto():
+    """立即执行一次自动归档（等同于定时任务的逻辑），便于手工验证。"""
+    months = settings.archive_retention_months
+    if months <= 0:
+        return {"code": 0, "message": "自动归档未启用", "data": {"enabled": False}}
+    cutoff = months_ago(months)
+    try:
+        info = archive_evidence(mode="auto", before=cutoff)
+    except Exception as exc:
+        logger.exception("自动归档失败")
+        raise HTTPException(500, f"自动归档失败（未删除任何记录）：{type(exc).__name__}: {str(exc)[:200]}")
+    return {"code": 0, "message": "ok", "data": dict(info, enabled=True, cutoff=cutoff.isoformat())}

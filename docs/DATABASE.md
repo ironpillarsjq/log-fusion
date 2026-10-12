@@ -8,10 +8,13 @@
 
 | 配置项 | 默认库 | Engine | 用途 |
 |---|---|---|---|
-| `LINUX_DB` | `linux_logs` | `linux_engine` | 7 类 Linux 审计表；当前代码还从这里读取存证表 |
+| `LINUX_DB` | `linux_logs` | `linux_engine` | 7 类 Linux 审计表 |
 | `WINDOWS_DB` | `windows_logs` | `windows_engine` | 5 类 Windows 事件表 |
-| `LOG_FUSION_DB` | `log_fusion` | `monitor_engine` | 平台心跳状态 `client_status` |
+| `LOG_FUSION_DB` | `log_fusion` | `monitor_engine` | 平台心跳状态 `client_status`、归档台账 `archive_log` |
 | `LOG_HASH_DB` | `log_hash` | `hash_engine` | 原始日志原文 + SHA-256 摘要存证表 `log_hash`（2026-10-11 新增） |
+
+> 2026-10-11 起存证读写全部走 `log_hash` 库；旧的 `linux_logs.audit_log_evidence` 在真实库中并不存在，
+> 相关代码路径已移除（详见 §3.2）。
 
 所有连接 URL 使用 `mysql+pymysql` 和 `charset=utf8mb4`，开启 `pool_pre_ping=True` 与 `pool_recycle=1800`。四个库之间没有跨库事务。
 
@@ -113,6 +116,41 @@ log_hash = sha256_hex( timestamp原始字符串 + "\x1f" + log原始字符串 )
 - 实测校验（同一 SQL 可在 MySQL 侧复算）：
   `SHA2(CONCAT(log_timestamp, CHAR(31), raw_log), 256) = log_hash`。
 
+### 3.3 `log_fusion.archive_log`（2026-10-11 新增）
+
+存证归档台账。每次「导出并删除」成功后写一行，记录归档产物与范围。
+**删除不可逆，台账是事后追溯「哪些记录在什么时候被导出到哪里」的唯一依据。**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT PK | 自增 |
+| `mode` | VARCHAR(16) | `auto`（自动归档）/ `manual`（手动区间归档） |
+| `file_path` | VARCHAR(512) | 归档 CSV 的绝对路径 |
+| `row_count` | BIGINT | 写入 CSV 的记录数 |
+| `deleted_count` | BIGINT | 实际删除的行数（正常应等于 `row_count`） |
+| `file_sha256` | CHAR(64) | CSV 文件内容摘要，可校验归档文件未被改动 |
+| `range_start` / `range_end` | DATETIME | 手动归档的时间区间（按 `created_at`） |
+| `before_time` | DATETIME | 自动归档的截止时间（`created_at < before_time`） |
+| `created_at` | DATETIME | 归档时间 |
+
+#### 归档策略与安全约束
+
+- **保留期**：`archive_retention_months`（默认 3）个**日历月**；自动归档删除
+  `created_at` 早于该时间点的记录。用 `created_at`（入库时间）而**不是** `event_time`，
+  否则客户端补传的历史日志会刚入库就被归档掉。
+- **归档目录**：`archive_dir`（默认 `data/archive`）。相对路径锚定到**仓库根目录**，
+  保证从不同工作目录启动时文件都落在同一处；导出的 CSV **永久保留，不做自动清理**。
+- **先落盘后删除**：写 CSV → `flush` + `fsync` → 校验文件存在、大小 > 0、行数与 id 数一致
+  → 才执行 `DELETE`。任一步失败立即中止，**一条都不删**。
+- **按 id 删除**，不是 `DELETE WHERE created_at < X`：否则归档期间新写入、同样满足条件的
+  记录会被误删。
+- **单批上限** `archive_batch_limit`（默认 200000）限制单次归档行数，避免把整表拉进内存。
+- 台账写入失败**不影响**已完成的导出与删除，只记录日志。
+
+实测（2026-10-12，`log_hash` 表 34099 条）：手动归档整日区间导出
+13,746,826 字节 CSV，用 CSV 解析器读回 **34099 条**、`raw_log` 无空值、`log_hash` 全为 64 位，
+数据库剩余 0 条，台账记录 `rows=34099 deleted=34099`，文件摘要与接口返回值一致。
+
 ## 4. `linux_logs` 代码依赖
 
 仓库没有这些表的 ORM 模型、建表 SQL或迁移。下列内容只表示当前代码会读取/写入哪些字段，不等同于正式 DDL。
@@ -185,30 +223,31 @@ Windows 表名固定为：
 
 2026-10-10 只读核验：五张表的列名与上表的代码依赖完全一致（字段数量与名称均相同）；字段类型、主键、唯一约束、索引和 JSON 列类型仍待核验。
 
-## 6. `audit_log_evidence` 兼容依赖
+## 6. `audit_log_evidence`（已废弃，2026-10-11 移除）
 
-当前代码从 `linux_engine`（即默认 `linux_logs`）执行：
+2026-10-11 之前，`/api/v1/evidence/*` 从 `linux_engine`（默认 `linux_logs`）执行：
 
 ```sql
-SELECT *
-FROM audit_log_evidence
-ORDER BY received_at DESC
-LIMIT 1000
+SELECT * FROM audit_log_evidence ORDER BY received_at DESC LIMIT 1000
 ```
 
-仓库没有该表模型或迁移，也不向该表写入。可以从代码确认的字段依赖仅有：
+仓库没有该表模型或迁移，也从不向它写入。当时的字段依赖：
 
 | 字段 | 依赖来源 | 用途 |
 |---|---|---|
 | `received_at` | SQL | 排序 |
 | `verify_status` | 后端 | 摘要计数、列表过滤 |
-| `evidence_id` | 当前模板 | 列表显示 |
-| `category` | 当前模板 | 列表显示 |
-| `raw_hash` | 当前模板 | 列表显示 |
+| `evidence_id` | 模板 | 列表显示 |
+| `category` | 模板 | 列表显示 |
+| `raw_hash` | 模板 | 列表显示 |
 
-状态统计识别 `VALID`、`HASH_MISMATCH`、`RAW_MISSING`、`PENDING`。其他列因为 `SELECT *` 会原样出现在列表和 CSV 中，但不能据此确认完整结构。
+表缺失或任何查询异常都被 `_evidence_rows()` 吞掉并返回空列表，因此 API 无法区分
+「没有存证」和「存证库故障」。2026-10-10 只读核验：`linux_logs` 与 `log_fusion` 中
+**都不存在**该表，页面上「完整性存证」永远是空的——故障被伪装成空数据。
 
-表缺失或任何查询异常都会被 `_evidence_rows()` 吞掉并返回空列表，因此 API 无法区分“没有存证”和“存证库故障”。存证摘要、分页和导出都只覆盖最近 1000 条。2026-10-10 只读核验：`linux_logs` 与 `log_fusion` 中都不存在该表，因此本环境的存证接口必然返回空结果——这正是“故障被伪装成空数据”的实际案例。
+**现状**：这三个接口已改为读取 `log_hash.log_hash`（见 §3.2），`_evidence_rows()`、
+`verify_status` 过滤参数与相关模板字段一并移除。该表及其字段不再是任何代码的依赖，
+仅作为历史记录保留在本节。
 
 ## 7. 事务与异常行为
 
@@ -218,7 +257,9 @@ LIMIT 1000
 | Windows 日志写入 | 先尝试一个请求列表一次 `windows_engine.begin()`；失败后同样逐行重试 | 同上 |
 | 心跳 upsert | 一个请求列表使用一个 ORM Session 提交 | 失败返回 503；上下文退出时 Session 关闭，未提交事务回滚 |
 | 日志查询/统计 | 每个 helper 打开独立连接 | 多表汇总不具备一致快照；异常通常成为 500 |
-| 存证读取 | 单连接读取最多 1000 条 | 所有异常降级为空集合 |
+| 存证读取 | 每个 helper 打开独立连接 | 查询失败返回 **503**（2026-10-12 前是降级为空集合，会把「库连不上」伪装成「没有存证」） |
+| 存证写入 | 先尝试整批一次 `hash_engine.begin()`；失败后退化为**逐行事务** | 只有唯一键冲突（errno 1062）算幂等成功；其他完整性错误计入 `errors[].stage="hash"`，不影响业务表入库 |
+| 存证归档 | 导出落盘校验通过后，按 id 分批 `DELETE` | 导出/校验任一步失败即中止且**不删除**；存量台账写入失败不影响已完成的归档 |
 
 日志写入在线程中执行，并由 `asyncio.wait_for` 设置 8 秒等待上限。超时只能停止等待，不能保证底层数据库线程已被取消；真实提交状态可能需要进一步验证。解析在入库之前完成，且为纯函数（`backend/app/parsers.py`），因此“解析失败”不会占用数据库连接。
 
@@ -237,17 +278,23 @@ LIMIT 1000
 ## 9. 初始化、迁移与保留策略
 
 - `requirements.txt` 包含 Alembic，但仓库没有 `alembic.ini`、versions 目录或迁移脚本。
-- 启动时仅 `create_all()` 管理 `client_status`；不会创建数据库本身、日志表或存证表，也不会变更已有列。
-- 代码中未发现种子数据、数据库回滚脚本、数据归档、TTL、分区、清理任务或备份恢复策略。
+- 启动时仅 `create_all()` 管理 `log_fusion` 库的表（`client_status`、`archive_log`）与
+  `log_hash.log_hash`；不会创建数据库本身、日志表，也不会变更已有列。
+- **保留策略（2026-10-11 新增）**：存证由自动归档任务处理——超过
+  `archive_retention_months`（默认 3 个日历月）的记录导出为 CSV 后从库中删除。
+  业务日志表（`linux_logs`/`windows_logs`）仍**没有任何** TTL、分区或清理任务。
+- 归档 CSV 永久保留在 `archive_dir`，不做自动清理。
+- 代码中未发现种子数据、数据库回滚脚本或备份恢复策略。
 - 代码中未发现外键关系。
-- 日志表、存证表、心跳表的容量目标和数据保留周期均待确认。
+- 日志表与心跳表的容量目标和数据保留周期均待确认。
 
 ## 10. 待确认清单
 
-1. 三个逻辑库的正式 `SHOW CREATE TABLE`、索引、字符集、时区与 MySQL 版本；列名已于 2026-10-10 只读核验，类型、索引与字符集仍未核验。
+1. 四个逻辑库的正式 `SHOW CREATE TABLE`、索引、字符集、时区与 MySQL 版本；列名已于 2026-10-10 只读核验，类型、索引与字符集仍未核验。
 2. 7 张 Linux 表是否都实际拥有关键词和 recent 查询依赖的字段：**已于 2026-10-10 只读核验**，结论见 §4.3，代码已按表适配。
 3. 5 张 Windows 表的字段类型，以及 `eventdata`/`system_extra` 是 TEXT 还是 JSON；列名已核验且与代码依赖一致。
-4. `audit_log_evidence` 的正式归属、完整字段、主键、索引和数据生产方；2026-10-10 只读核验确认 `linux_logs` 与 `log_fusion` 中均不存在该表。
+4. `audit_log_evidence` 的正式归属与数据生产方：**已于 2026-10-11 确认废弃**，真实库中不存在且已无代码依赖（见 §6）。
 5. `client_status` 的实际索引名称与 `updated_at` 数据库行为；已核验 `log_fusion` 库仅有这一张表且列与 ORM 模型一致，索引名称待核验。
 6. 应用账号所需的最小权限，以及生产是否允许应用执行 DDL。
-7. 数据保留、备份、恢复、归档与隐私/合规要求。
+7. 生产环境的归档保留期（当前默认 3 个月）、归档文件存放位置与异地备份要求；
+   归档 CSV 目前永久保留，磁盘容量规划待确认。

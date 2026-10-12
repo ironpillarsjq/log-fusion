@@ -1,6 +1,10 @@
 function dashboard() {
   return {
     page:'overview',clock:'',summary:{total:0,by_platform:{Linux:0,Windows:0},categories:[]},categories:[],clients:[],logs:[],evidence:[],logKeys:[],logPlatform:'Linux',logCategory:'authentication_session',keyword:'',heartbeatMetrics:[],evidenceMetrics:[],overviewMetrics:[],wsStatus:'connecting',ws:null,wsRetry:0,wsTimer:null,wsLastMsg:0,wsWatchTimer:null,pollTimer:null,summaryTimer:null,pageTimer:null,chart:null,chartNote:'',resizeTimer:null,
+    // 分页状态：融合日志与存证列表都是一页 30 条
+    PAGE_SIZE:30,logPage:1,logPages:1,logTotal:0,evidencePage:1,evidencePages:1,evidenceTotal:0,
+    // 存证归档（导出 + 删除）
+    archiveStart:'',archiveEnd:'',archiveBusy:false,archiveMessage:'',archiveError:false,archiveMonths:3,
     fmt(v){return Number(v||0).toLocaleString('zh-CN')},
 
     bootWarning(html){const el=document.getElementById('lf-boot-warning');if(!el)return;el.style.display='';el.innerHTML=html},
@@ -32,6 +36,7 @@ function dashboard() {
       this.tick();setInterval(()=>this.tick(),1000);
       await this.refreshSummary();
       try{this.categories=await this.api('/api/v1/logs/categories')}catch(e){}
+      try{const a=await this.api('/api/v1/archive/preview');if(a&&a.retentionMonths!=null)this.archiveMonths=a.retentionMonths}catch(e){}
       this.connectMonitorWs();this.startWsWatchdog();
       // WebSocket 断开时退化为 5 秒轮询；概览 10 秒刷新；日志/存证页各自定时刷新
       this.pollTimer=setInterval(()=>{if(this.wsStatus!=='connected')this.loadHeartbeats()},5000);
@@ -94,8 +99,56 @@ function dashboard() {
       this.chart.setOption(option);
     },
     async loadHeartbeats(){try{const [s,d]=await Promise.all([this.api('/api/v1/monitor/summary'),this.api('/api/v1/monitor/clients')]);this.clients=d.items||[];this.heartbeatMetrics=[{label:'客户端总数',value:s.total,hint:'纳管客户端'},{label:'在线客户端',value:s.states.ONLINE,hint:s.onlineRate+'% 在线率'},{label:'延迟客户端',value:s.states.DELAYED,hint:'需要关注'},{label:'离线客户端',value:s.states.OFFLINE,hint:'连接中断'}]}catch(e){this.warn('心跳数据加载失败',e)}},
-    async loadLogs(){try{if(!this.categories.length)this.categories=await this.api('/api/v1/logs/categories');const choices=this.categories.filter(x=>x.platform===this.logPlatform);if(!choices.some(x=>x.key===this.logCategory))this.logCategory=choices[0]?.key||'';const d=await this.api(`/api/v1/logs/categories/${this.logCategory}?platform=${this.logPlatform}&page=1&size=30&keyword=${encodeURIComponent(this.keyword)}`);this.logs=d.items||[];this.logKeys=this.logs.length?Object.keys(this.logs[0]):[]}catch(e){this.warn('日志列表加载失败',e)}},
-    async loadEvidence(){try{const [s,d]=await Promise.all([this.api('/api/v1/evidence/summary'),this.api('/api/v1/evidence?page=1&size=100')]);this.evidence=d.items||[];this.evidenceMetrics=[{label:'存证总数',value:s.total,hint:'独立原始记录'},{label:'校验正常',value:s.statuses.VALID,hint:'SHA-256 一致'},{label:'哈希异常',value:s.statuses.HASH_MISMATCH,hint:'需要复核'},{label:'待校验',value:s.statuses.PENDING,hint:'等待校验'}]}catch(e){this.warn('存证数据加载失败',e)}},
+    async loadLogs(){try{if(!this.categories.length)this.categories=await this.api('/api/v1/logs/categories');const choices=this.categories.filter(x=>x.platform===this.logPlatform);if(!choices.some(x=>x.key===this.logCategory))this.logCategory=choices[0]?.key||'';const d=await this.api(`/api/v1/logs/categories/${this.logCategory}?platform=${this.logPlatform}&page=${this.logPage}&size=${this.PAGE_SIZE}&keyword=${encodeURIComponent(this.keyword)}`);this.logs=d.items||[];this.logTotal=Number(d.total||0);this.logPages=Math.max(1,Math.ceil(this.logTotal/this.PAGE_SIZE));this.logKeys=this.logs.length?Object.keys(this.logs[0]):[]}catch(e){this.warn('日志列表加载失败',e)}},
+    // 切换平台/类别/关键词时回到第 1 页，否则会停在上一个查询的页码上
+    searchLogs(){this.logPage=1;return this.loadLogs()},
+    gotoLogPage(p){if(p<1||p>this.logPages||p===this.logPage)return;this.logPage=p;return this.loadLogs()},
+    async loadEvidence(){try{const [s,d]=await Promise.all([this.api('/api/v1/evidence/summary'),this.api(`/api/v1/evidence?page=${this.evidencePage}&size=${this.PAGE_SIZE}`)]);this.evidence=d.items||[];this.evidenceTotal=Number(d.total||0);this.evidencePages=Math.max(1,Number(d.pages||Math.ceil(this.evidenceTotal/this.PAGE_SIZE)));this.evidenceMetrics=[{label:'存证总数',value:this.fmt(s.total),hint:'原始日志记录'},{label:'已校验',value:this.fmt(s.statuses.VALID),hint:'SHA-256 摘要存在'},{label:'哈希异常',value:this.fmt(s.statuses.HASH_MISMATCH),hint:'需要复核'},{label:'归档阈值',value:this.archiveMonths+' 个月',hint:'按入库时间自动归档'}]}catch(e){this.warn('存证数据加载失败',e)}},
+    gotoEvidencePage(p){if(p<1||p>this.evidencePages||p===this.evidencePage)return;this.evidencePage=p;return this.loadEvidence()},
+
+    // 归档：先「仅统计」看到会删多少条，再二次确认执行导出并删除
+    async previewArchive(){
+      if(!this.archiveStart&&!this.archiveEnd){this.archiveError=true;this.archiveMessage='请至少选择开始或结束日期';return}
+      this.archiveBusy=true;this.archiveError=false;this.archiveMessage='正在统计…';
+      try{
+        const q=new URLSearchParams();
+        if(this.archiveStart)q.set('start',this.archiveStart);
+        if(this.archiveEnd)q.set('end',this.archiveEnd);
+        const d=await this.api('/api/v1/archive/preview?'+q.toString());
+        this.archiveMessage=`该区间共有 ${this.fmt(d.candidates)} 条存证可归档（导出为 CSV 后将从数据库删除）`;
+      }catch(e){this.archiveError=true;this.archiveMessage='统计失败：'+(e&&e.message?e.message:e)}
+      finally{this.archiveBusy=false}
+    },
+    async runArchive(){
+      if(!this.archiveStart&&!this.archiveEnd){this.archiveError=true;this.archiveMessage='请至少选择开始或结束日期';return}
+      const range=(this.archiveStart||'最早')+' 至 '+(this.archiveEnd||'现在');
+      if(!window.confirm(`将导出并【永久删除】${range} 的存证记录。\n\n导出文件确认落盘后才会删除，删除不可恢复。确定继续？`))return;
+      this.archiveBusy=true;this.archiveError=false;this.archiveMessage='正在导出并删除…';
+      try{
+        const r=await fetch('/api/v1/archive/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start:this.archiveStart,end:this.archiveEnd,confirm:true})});
+        const j=await r.json();
+        if(!r.ok){this.archiveError=true;this.archiveMessage='归档失败：'+(j.detail||('HTTP '+r.status));return}
+        const d=j.data||j;
+        this.archiveMessage=`归档完成：导出 ${this.fmt(d.exported)} 条并删除 ${this.fmt(d.deleted)} 条，文件 ${d.file||'-'}`;
+        this.evidencePage=1;await this.loadEvidence();
+      }catch(e){this.archiveError=true;this.archiveMessage='归档失败：'+(e&&e.message?e.message:e)}
+      finally{this.archiveBusy=false}
+    },
+    async runAutoArchive(){
+      const label=this.archiveMonths+' 个日历月之前（按入库时间）';
+      if(!window.confirm(`将导出并【永久删除】${label}的全部存证记录。\n\n导出文件确认落盘后才会删除，删除不可恢复。确定继续？`))return;
+      this.archiveBusy=true;this.archiveError=false;this.archiveMessage='正在执行自动归档…';
+      try{
+        const r=await fetch('/api/v1/archive/auto',{method:'POST'});
+        const j=await r.json();
+        if(!r.ok){this.archiveError=true;this.archiveMessage='自动归档失败：'+(j.detail||('HTTP '+r.status));return}
+        const d=j.data||j;
+        if(d.enabled===false){this.archiveMessage='自动归档未启用（archive_retention_months <= 0）';return}
+        this.archiveMessage=d.exported?`自动归档完成：导出 ${this.fmt(d.exported)} 条并删除 ${this.fmt(d.deleted)} 条，文件 ${d.file}`:`没有超过 ${this.archiveMonths} 个月的存证需要归档（截止 ${d.cutoff}）`;
+        if(d.deleted){this.evidencePage=1;await this.loadEvidence()}
+      }catch(e){this.archiveError=true;this.archiveMessage='自动归档失败：'+(e&&e.message?e.message:e)}
+      finally{this.archiveBusy=false}
+    },
     exportLogs(){location.href=`/api/v1/logs/export?platform=${this.logPlatform}&category=${this.logCategory}&size=1000`},
     exportClients(){const text=['clientId,serverName,ipAddress,os,status',...this.clients.map(c=>[c.clientId,c.serverName,c.ipAddress,c.os_type,c.heartbeatStatus].map(x=>'"'+String(x||'').replaceAll('"','""')+'"').join(','))].join('\\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\\ufeff'+text],{type:'text/csv'}));a.download='clients.csv';a.click()},
     connectMonitorWs(){const proto=location.protocol==='https:'?'wss':'ws';this.wsStatus='connecting';let ws;try{ws=new WebSocket(`${proto}://${location.host}/ws/client-monitor`)}catch(e){this.wsStatus='disconnected';this.syncRealtimeMetric();this.scheduleWsReconnect();return}this.ws=ws;this.wsLastMsg=Date.now();ws.onopen=()=>{this.wsStatus='connected';this.wsRetry=0;this.wsLastMsg=Date.now();this.syncRealtimeMetric()};ws.onmessage=(ev)=>{this.wsLastMsg=Date.now();try{this.applySnapshot(JSON.parse(ev.data))}catch(e){}};ws.onclose=()=>{this.wsStatus='disconnected';this.syncRealtimeMetric();this.scheduleWsReconnect()};ws.onerror=()=>{try{ws.close()}catch(e){}}},

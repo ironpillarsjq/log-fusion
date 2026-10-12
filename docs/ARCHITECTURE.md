@@ -19,6 +19,7 @@ flowchart LR
     Windows[(windows_logs<br/>5 类事件表)]
     Monitor[(log_fusion<br/>client_status)]
     Hash[(log_hash<br/>log_hash 原文 + SHA-256)]
+    Archive[[data/archive<br/>归档 CSV 永久保留]]
     CDN[jsDelivr CDN]
 
     FB -->|POST logs / heartbeat| App
@@ -30,6 +31,7 @@ flowchart LR
     App --> Windows
     App --> Monitor
     App --> Hash
+    App -->|导出| Archive
     App --> SSE
     App --> WS
     SSE -->|text/event-stream| Browser
@@ -40,14 +42,15 @@ flowchart LR
 
 | 组件 | 职责 | 状态边界 |
 |---|---|---|
-| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、心跳 upsert、SSE、生命周期巡检 | 应用主入口 |
-| `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置 | `get_settings()` 进程内缓存 |
+| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证列表/导出、归档接口、心跳 upsert、SSE、生命周期巡检与每日自动归档任务 | 应用主入口 |
+| `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置与归档策略（目录、保留月数、单批上限） | `get_settings()` 进程内缓存 |
 | `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
-| `backend/app/models.py` | 声明 `ClientStatus`、`LogHash` ORM 模型 | 覆盖平台心跳表与存证表 |
+| `backend/app/models.py` | 声明 `ClientStatus`、`LogHash`、`ArchiveLog` ORM 模型 | 覆盖平台心跳表、存证表与归档台账 |
 | `backend/app/catalog.py` | Linux/Windows 类别和 Linux 查询列 | 代码内静态元数据 |
 | `backend/app/services.py` | 分类查询（列表上限 100 / 导出上限 10000）、汇总、跨库最近日志合并 | 同步 SQL |
 | `backend/app/parsers.py` | 原始日志 → 数据库行的解析（Linux auditd/syslog、Windows winlog），时间与列类型归一化 | 纯函数，无状态 |
 | `backend/app/hashing.py` | 原始日志存证：按 `sha256(timestamp + 0x1F + log)` 计算摘要并构造 `log_hash` 行 | 纯函数，无状态 |
+| `backend/app/archive.py` | 存证归档：按条件选 id、分批取行、写 CSV 并校验落盘、按 id 删除、写归档台账 | 删除不可逆；文件落盘确认后才删 |
 | `backend/app/ws.py` | 维护浏览器 WebSocket 集合并广播快照 | 进程内，不跨 worker |
 | `dashboard.html` | 服务端页面骨架与四个功能区 | 根路由渲染 |
 | `frontend/app.js` | Alpine 页面状态、REST 调用、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
@@ -171,7 +174,9 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 - 分类列表按第一个选择列倒序，分页上限 100；关键词 SQL 按目标表实际存在的列构造（Linux 取 `hostname`/`source_address`/`type` 的交集，Windows 用 `computer`/`provider_name`/`event_id`）。
 - 最近日志分别在 Linux 和 Windows 库内 UNION（Linux 缺列用 `NULL` 占位），再在 Python 合并；排序键统一转 ISO 字符串，避免两个库时间列类型不一致时比较失败。
 - 日志 CSV 导出最多查询 10000 条（`size` 参数上限 10000，内部通过 `size_cap` 放宽，不受分类列表 100 行上限影响），在内存构造完整字符串后流式包装响应。
-- 存证读取固定从 `linux_logs.audit_log_evidence` 取最近 1000 条，然后在 Python 中统计、筛选、分页或导出。
+- 存证列表/摘要直接查 `log_hash.log_hash`，分页由数据库侧 `LIMIT/OFFSET` 完成；列表不返回 `raw_log` 原文。
+- 存证归档由 `archive.py` 处理：自动（按 `created_at` 早于保留期）与手动（时间区间）两种方式，
+  都是「导出行集合 → 流式写 CSV → 校验落盘 → 按 id 删除 → 写台账」。**保存失败时不删任何数据**。
 
 ## 8. 状态与一致性边界
 
@@ -223,14 +228,15 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 
 ## 12. 当前架构限制与技术债
 
-1. 既有日志表仍没有仓库内正式 DDL/迁移；`client_status`、`log_hash` 有 ORM 模型（`log_hash` 另有可复现 DDL `docs/sql/log_hash.sql`），告警日志表没有。
+1. 既有日志表仍没有仓库内正式 DDL/迁移；`client_status`、`log_hash`、`archive_log` 有 ORM 模型（`log_hash` 另有可复现 DDL `docs/sql/log_hash.sql`），告警日志表没有。
 2. 进程内实时状态阻止安全横向扩展。
 3. SSE 仍是竞争队列而非广播，并存在背压阻塞风险（当前前端已不再订阅，影响面限于外部消费方）。
 4. 分类关键词和最近日志查询曾假设所有 Linux 表都有同一批字段；2026-10-10 已按真实列适配（缺失列用 `NULL` 占位、关键词只搜存在的列），原 500 故障已消除。
-5. 存证接口不写入、不校验，且把数据库错误降级为空数据；实测 `audit_log_evidence` 表不存在，接口必然返回空，无法与“没有存证”区分。
+5. 存证已改为真实读写 `log_hash`（2026-10-11），但**逐条校验接口仍未实现**：篡改检测需要人工执行
+   §3.2 的复算 SQL。归档删除不可逆，目前只靠 `archive_log` 台账追溯。
 6. `monitor/clients/{client_id}/logs` 当前返回全局最近日志，没有按客户端过滤。
-7. CSV 导出在内存一次性生成，且没有公式注入防护。
+7. CSV 导出在内存一次性生成，且没有公式注入防护（归档 CSV 同样未做公式注入防护）。
 8. 采集失败已改为 `logger` + 逐条 `errors` 明细，但仍没有失败指标、重试或死信机制。
-9. 没有自动化测试、结构化可观测性、认证授权或明确的生产部署拓扑。
+9. 自动归档按 `created_at` 单批最多处理 `archive_batch_limit` 行，缺少失败告警与多实例互斥。
 
 具体建议和验收口径见 [TODO.md](./TODO.md)。
