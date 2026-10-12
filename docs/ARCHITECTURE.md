@@ -4,7 +4,7 @@
 
 ## 1. 架构概览
 
-当前系统是单个 FastAPI 进程承载页面、API 与实时连接的三库应用。浏览器入口由 Jinja2 服务端渲染，页面再通过 HTTP、SSE 和 WebSocket 获取动态数据。Linux、Windows 日志沿用不同的历史表结构，客户端状态写入独立平台库。
+当前系统是单个 FastAPI 进程承载页面、API 与实时连接的四库应用。浏览器入口由 Jinja2 服务端渲染，页面再通过 HTTP、SSE 和 WebSocket 获取动态数据。Linux、Windows 日志沿用不同的历史表结构，客户端状态写入独立平台库，原始日志存证写入独立的 `log_hash` 库。
 
 ```mermaid
 flowchart LR
@@ -18,6 +18,7 @@ flowchart LR
     Linux[(linux_logs<br/>7 类日志 + 可选存证表)]
     Windows[(windows_logs<br/>5 类事件表)]
     Monitor[(log_fusion<br/>client_status)]
+    Hash[(log_hash<br/>log_hash 原文 + SHA-256)]
     CDN[jsDelivr CDN]
 
     FB -->|POST logs / heartbeat| App
@@ -28,6 +29,7 @@ flowchart LR
     App --> Linux
     App --> Windows
     App --> Monitor
+    App --> Hash
     App --> SSE
     App --> WS
     SSE -->|text/event-stream| Browser
@@ -38,13 +40,14 @@ flowchart LR
 
 | 组件 | 职责 | 状态边界 |
 |---|---|---|
-| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、心跳 upsert、SSE、生命周期巡检 | 应用主入口 |
+| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、心跳 upsert、SSE、生命周期巡检 | 应用主入口 |
 | `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置 | `get_settings()` 进程内缓存 |
-| `backend/app/db.py` | 创建三个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
-| `backend/app/models.py` | 声明 `ClientStatus` ORM 模型 | 仅覆盖平台心跳表 |
+| `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
+| `backend/app/models.py` | 声明 `ClientStatus`、`LogHash` ORM 模型 | 覆盖平台心跳表与存证表 |
 | `backend/app/catalog.py` | Linux/Windows 类别和 Linux 查询列 | 代码内静态元数据 |
 | `backend/app/services.py` | 分类查询（列表上限 100 / 导出上限 10000）、汇总、跨库最近日志合并 | 同步 SQL |
 | `backend/app/parsers.py` | 原始日志 → 数据库行的解析（Linux auditd/syslog、Windows winlog），时间与列类型归一化 | 纯函数，无状态 |
+| `backend/app/hashing.py` | 原始日志存证：按 `sha256(timestamp + 0x1F + log)` 计算摘要并构造 `log_hash` 行 | 纯函数，无状态 |
 | `backend/app/ws.py` | 维护浏览器 WebSocket 集合并广播快照 | 进程内，不跨 worker |
 | `dashboard.html` | 服务端页面骨架与四个功能区 | 根路由渲染 |
 | `frontend/app.js` | Alpine 页面状态、REST 调用、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
@@ -55,9 +58,9 @@ flowchart LR
 
 ## 3. 启动与生命周期
 
-1. Uvicorn 导入 `app.main:app`，模块级创建三个 SQLAlchemy Engine、SSE 队列和 WebSocket 管理器。
-2. FastAPI lifespan 启动时调用 `Base.metadata.create_all(monitor_engine)`；当前只会尝试创建 `log_fusion.client_status`。
-3. 如果建表失败，应用记录异常但继续启动。
+1. Uvicorn 导入 `app.main:app`，模块级创建四个 SQLAlchemy Engine、SSE 队列和 WebSocket 管理器。
+2. FastAPI lifespan 启动时先 `Base.metadata.create_all(monitor_engine)` 创建 `log_fusion.client_status`，再 `create_all(hash_engine, tables=[LogHash.__table__])` 创建 `log_hash.log_hash`。
+3. 任一步建表失败都记录异常但继续启动（库本身必须预先存在）。
 4. lifespan 创建 `_status_watchdog()` 后台任务，每 5 秒重算所有客户端状态：仅当状态变化时才提交数据库，但**每轮都无条件广播一次完整快照**（见 ADR-009）。
 5. 服务停止时取消 watchdog。进程结束会清空 SSE 队列和 WebSocket 连接；`client_status` 数据保留在 MySQL。
 
@@ -75,7 +78,7 @@ flowchart LR
 
 ### 4.2 局部与功能页
 
-- HTMX 每 30 秒请求 `/partials/db-status`，返回三个数据库状态 badge 的 HTML 片段。
+- HTMX 每 30 秒请求 `/partials/db-status`，返回四个数据库状态 badge 的 HTML 片段。
 - 心跳页请求 `/api/v1/monitor/summary` 和 `/api/v1/monitor/clients`。
 - 日志页按平台和类别请求 `/api/v1/logs/categories/{category}`。
 - 存证页请求存证摘要和列表；数据库表不可用时当前后端返回空数据。
@@ -88,17 +91,20 @@ sequenceDiagram
     participant C as 采集客户端
     participant A as FastAPI
     participant DB as Linux/Windows MySQL
+    participant H as log_hash MySQL
     participant Q as 内存 SSE Queue
     participant B as 浏览器 EventSource
 
     C->>A: POST /api/v1/logs/{platform}
+    A->>A: 解析（parsers.py）
     A->>DB: 在线程中批量事务写入（8 秒上限）
+    A->>H: 写存证行 hash(timestamp+0x1F+log) + 原文
     alt 写入成功
         DB-->>A: commit
         A->>Q: 每条记录放入摘要事件
-        A-->>C: 200 {accepted, persisted:true}
+        A-->>C: 200 {accepted, persisted:true, hashed:N}
     else 写入异常或超时
-        A->>A: 打印 persistence failed
+        A->>A: 记录 persistence failed
         A->>Q: 仍放入摘要事件
         A-->>C: 200 {accepted, persisted:false}
     end
@@ -182,7 +188,7 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 
 ## 9. 外部依赖
 
-- MySQL `linux_logs`、`windows_logs`、`log_fusion` 三个逻辑库。
+- MySQL `linux_logs`、`windows_logs`、`log_fusion`、`log_hash` 四个逻辑库。
 - jsDelivr CDN 已不再是依赖：Bootstrap、HTMX、Alpine.js、ECharts 自托管在 `frontend/vendor/`（见 ADR-011）。
 - Windows/Conda 固定解释器路径，见 `docs/README.md`。
 - 模拟器依赖仓库外的 Linux/Windows 样例文件。
@@ -194,9 +200,11 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 |---|---|
 | 首页汇总失败 | 吞掉异常，渲染全 0 汇总 |
 | `/health` 某库不可用 | HTTP 200；对应数据库布尔值为 `false`，顶层仍为 `ok` |
-| `client_status` 自动建表失败 | 记录异常并继续启动；心跳/监控接口之后可能 5xx/503 |
+| `client_status` / `log_hash` 自动建表失败 | 各自记录异常并继续启动；对应接口之后可能 5xx/503 |
 | 心跳写入失败 | 记录异常并返回 HTTP 503 `heartbeat persist failed` |
-| 日志解析或入库失败 | HTTP 200，`persisted:false`，`errors[].stage` 区分 `parse`/`insert`，仍写入 SSE 队列 |
+| 日志解析或入库失败 | HTTP 200，`persisted:false`，`errors[].stage` 区分 `parse`/`insert`/`hash`，仍写入 SSE 队列 |
+| 存证写入失败 | 不影响已入库日志；逐行定位记入 `errors[].stage="hash"`，`hashed` 计数反映成功条数 |
+| 记录缺 `log` 字段 | 跳过存证（`stage="hash"`），日志本身仍正常入库 |
 | 存证查询失败/表缺失 | 吞掉异常并返回空摘要、空列表或只有 BOM 的 CSV |
 | 分类/汇总 SQL 失败 | 没有统一捕获，通常返回 HTTP 500 |
 | WebSocket 单连接发送失败 | 记录警告并移除连接；单次发送上限 10 秒 |
@@ -215,7 +223,7 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 
 ## 12. 当前架构限制与技术债
 
-1. 没有既有日志表与存证表的正式 DDL/迁移；只有 `client_status` ORM 模型。
+1. 既有日志表仍没有仓库内正式 DDL/迁移；`client_status`、`log_hash` 有 ORM 模型（`log_hash` 另有可复现 DDL `docs/sql/log_hash.sql`），告警日志表没有。
 2. 进程内实时状态阻止安全横向扩展。
 3. SSE 仍是竞争队列而非广播，并存在背压阻塞风险（当前前端已不再订阅，影响面限于外部消费方）。
 4. 分类关键词和最近日志查询曾假设所有 Linux 表都有同一批字段；2026-10-10 已按真实列适配（缺失列用 `NULL` 占位、关键词只搜存在的列），原 500 故障已消除。

@@ -4,19 +4,20 @@
 
 ## 1. 项目目标与状态
 
-Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux 审计日志与 Windows 事件日志，提供分类入库、统计查询、CSV 导出、SSE 实时通知、客户端心跳监控和存证记录兼容查询。
+Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux 审计日志与 Windows 事件日志，提供分类入库、统计查询、CSV 导出、SSE 实时通知、客户端心跳监控和原始日志存证。
 
-当前项目处于开发中期：核心查询、采集写入、仪表盘、持久化心跳和前端心跳实时通道（WebSocket + 断线重连 + 假死检测）已经具备；认证授权、正式数据库迁移、完整存证写入/校验、可靠的多订阅者实时分发和自动化测试尚未完成。
+当前项目处于开发中期：核心查询、采集写入、原始日志 SHA-256 存证、仪表盘、持久化心跳和前端心跳实时通道（WebSocket + 断线重连 + 假死检测）已经具备；认证授权、正式数据库迁移、存证校验接口、可靠的多订阅者实时分发和自动化测试尚未完成。
 
 ## 2. 当前核心能力
 
 - FastAPI 提供页面、HTTP API、SSE 与 WebSocket。
 - Jinja2 在 `/` 服务端渲染仪表盘，Alpine.js 管理页面状态，HTMX 刷新数据库状态，ECharts 展示分类统计。
 - 查询 7 类 Linux 日志表和 5 类 Windows 日志表。
-- 接收 Linux/Windows 日志：`parsers.py` 把原始记录解析成数据库行（含时间归一化与按表裁剪），再批量入库；响应用 `inserted`/`skipped`/`failed`/`errors[].stage` 区分“解析失败”和“入库失败”，并始终尝试发送实时事件。
+- 接收 Linux/Windows 日志：`parsers.py` 把原始记录解析成数据库行（含时间归一化与按表裁剪），再批量入库；响应用 `inserted`/`skipped`/`failed`/`hashed`/`errors[].stage` 区分“解析失败”“入库失败”和“存证跳过”，并始终尝试发送实时事件。
+- 每条日志入库前由 `hashing.py` 按 `sha256(timestamp + 0x1F + log)` 计算摘要，把原始 `log` 原文与摘要写入 `log_hash.log_hash`（唯一索引去重；缺 `log` 则跳过存证且不影响入库）。
 - 在 `log_fusion.client_status` 中持久化客户端心跳，按 10 秒/30 秒阈值计算在线、延迟、离线状态。
 - 通过 `/ws/client-monitor` 广播心跳快照（每次心跳成功时，以及后台每 5 秒的巡检轮次；页面已接入该通道并实现断线重连与假死检测），通过 `/api/v1/logs/stream` 推送日志事件。
-- 查询并导出已有 `audit_log_evidence` 表；当前代码不创建也不写入该表。
+- 查询并导出已有 `audit_log_evidence` 表；当前代码不创建也不写入该表（与新的 `log_hash` 存证表是两套独立机制）。
 
 ## 3. 代码范围
 
@@ -26,10 +27,11 @@ log-fusion/
 │   ├── app/
 │   │   ├── main.py             # 应用、路由、采集写入、实时通道
 │   │   ├── config.py           # 环境配置
-│   │   ├── db.py               # 三个 MySQL Engine 与会话
-│   │   ├── models.py           # client_status ORM 模型
+│   │   ├── db.py               # 四个 MySQL Engine 与会话
+│   │   ├── models.py           # client_status、log_hash ORM 模型
 │   │   ├── services.py         # 日志查询与统计
 │   │   ├── parsers.py          # 采集记录解析（auditd/syslog/winlog → 数据库行）
+│   │   ├── hashing.py          # 原始日志 SHA-256 存证行构造
 │   │   ├── catalog.py          # 类别、查询列与各表真实列定义
 │   │   ├── ws.py               # WebSocket 连接管理
 │   │   └── templates/dashboard.html
@@ -41,6 +43,8 @@ log-fusion/
 │   ├── styles.css              # 旧静态页面资源，当前模板未引用
 │   └── index.html              # 未配置为当前入口
 ├── docs/                       # 当前实现的维护文档
+│   ├── sql/log_hash.sql        # 原始日志存证库/表的可复现 DDL
+│   └── fluent-bit-client.conf  # 真实客户端接入样例（Linux auditd / Windows winlog）
 ├── tests/                      # pytest 单元/契约测试（不连接数据库）
 ├── tools/                      # .cmd 启动器的 ASCII 转发脚本；chart-layout-check.cjs（概览环形图布局自检）
 ├── 旧前端/                     # 遗留 Vue SPA，只读参考
@@ -65,7 +69,7 @@ log-fusion/
 | 模板 | Jinja2 3.1.6 |
 | 实时 | sse-starlette 3.5.0、FastAPI WebSocket |
 | 浏览器 UI | Bootstrap 5.3.3、HTMX 2.0.4、Alpine.js 3.14.8、ECharts 5.5.1（自托管于 `frontend/vendor/`） |
-| 数据库 | MySQL：`linux_logs`、`windows_logs`、`log_fusion` |
+| 数据库 | MySQL：`linux_logs`、`windows_logs`、`log_fusion`、`log_hash` |
 
 仓库没有前端构建步骤；四个前端库已自托管在 `frontend/vendor/`（见 ADR-011），页面不依赖公网 CDN，断网也能完整加载。
 
@@ -78,13 +82,15 @@ log-fusion/
 | 环境变量 | 默认值 | 用途 |
 |---|---|---|
 | `APP_NAME` | `Log Fusion` | FastAPI 应用名 |
-| `DB_HOST` | `192.168.5.6` | MySQL 主机 |
+| `DB_HOST` | `100.107.214.72` | MySQL 主机 |
 | `DB_PORT` | `3306` | MySQL 端口 |
 | `DB_USER` | `root` | MySQL 用户 |
 | `DB_PASSWORD` | 代码内存在默认值 | MySQL 密码；应由环境覆盖 |
 | `LINUX_DB` | `linux_logs` | Linux 日志库 |
 | `WINDOWS_DB` | `windows_logs` | Windows 日志库 |
 | `LOG_FUSION_DB` | `log_fusion` | 平台状态库 |
+| `LOG_HASH_DB` | `log_hash` | 原始日志存证库 |
+| `LOG_HASH_TABLE` | `log_hash` | 存证表名 |
 | `RAW_STORAGE_DIR` | `data/raw` | 原始存储目录配置；当前代码未使用 |
 
 安全提示：仓库当前含数据库默认凭据，只适合受控开发环境。部署前应轮换密码、使用最小权限账号并通过环境注入。

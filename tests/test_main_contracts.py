@@ -133,6 +133,7 @@ def test_build_snapshot_counts_states(monkeypatch):
 def no_db_write(monkeypatch):
     """只跳过真正的写库：解析仍走真实实现，用于验证解析→响应→SSE 的契约。"""
     monkeypatch.setattr(main, "_persist_rows", lambda engine, entries: (len(entries), []))
+    monkeypatch.setattr(main, "_persist_evidence", lambda platform, records, event_times: (len(records), []))
 
 
 def test_unsupported_platform_returns_404(client):
@@ -157,7 +158,8 @@ def test_ingest_normalized_payload_is_parsed_and_streamed(client, queue, no_db_w
     }])
     assert response.status_code == 200
     assert response.json() == {
-        "accepted": 1, "persisted": True, "inserted": 1, "skipped": 0, "failed": 0, "errors": [],
+        "accepted": 1, "persisted": True, "inserted": 1, "skipped": 0, "failed": 0,
+        "hashed": 1, "errors": [],
     }
     assert queue.items == [{
         "platform": "linux",
