@@ -32,10 +32,10 @@
 
 ## 服务端状态与数据库
 
-- MySQL 在 `192.168.5.6:3306`，三个逻辑库：`linux_logs`、`windows_logs`、`log_fusion`。配置在 `backend/app/config.py`（默认 `root`/`mysql_YbJWfE`），可用环境变量或 `backend/.env` 覆盖（`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`LINUX_DB`、`WINDOWS_DB`、`LOG_FUSION_DB`）。默认 `.env` 相对 CWD，启动脚本切到 `backend/`。
+- MySQL 在 `192.168.5.6:3306`，四个逻辑库：`linux_logs`（7 张审计表）、`windows_logs`（5 张事件表）、`log_fusion`（心跳 `client_status` + 归档台账 `archive_log`）、`log_hash`（原始日志 SHA-256 存证表）。配置在 `backend/app/config.py`（默认 `root`/`mysql_YbJWfE`），可用环境变量或 `backend/.env` 覆盖（`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`LINUX_DB`、`WINDOWS_DB`、`LOG_FUSION_DB`、`LOG_HASH_DB`、`LOG_HASH_TABLE`）。默认 `.env` 相对 CWD，启动脚本切到 `backend/`。`log_fusion` 里另有一张 **0 行的遗留空表 `log_hash`**（`LOG_HASH_DB` 拆分前由 `create_all()` 建在此处），当前代码不读写它。
 - **心跳已持久化**到 `log_fusion.client_status`，启动时 `create_all` 自动建表；`log_fusion` 库不存在则建表失败只记日志、应用照常启动，但 `POST /api/v1/heartbeat` 返回 503。状态阈值 10s 在线 / 30s 延迟 / 其余离线，后台 watchdog 每 5s 重算并广播。
 - **实时通道仍是进程内存**：WebSocket 连接集合（`ws.py`）和 SSE `event_queue`（`maxsize=1000`）不跨进程。**必须单 worker**，多 worker 会导致 SSE 分流、WS 广播不完整、watchdog 重复。
-- 写入/表缺失不报错给客户端：`POST /api/v1/logs/{platform}` 无论解析失败还是入库失败都返回 200，用 `persisted` 和 `errors[].stage`（`parse`/`insert`）区分；evidence 接口表缺失时返回空集合。排查「没数据」先看 `/health` 的 `databases` 与响应里的这些字段。
+- 写入/表缺失不报错给客户端：`POST /api/v1/logs/{platform}` 无论解析失败还是入库失败都返回 200，用 `persisted` 和 `errors[].stage` 区分——`parse`（解析失败）、`insert`（业务表写入失败）、`hash`（存证跳过或失败，`log` 缺失时会出现，**不影响入库**）。存证接口不再吞错：`/api/v1/evidence*` 读 `log_hash` 库，查询失败返回 **503**，只有成功且 `total=0` 才是「真的没有存证」。排查「没数据」先看 `/health` 的 `databases` 与响应里的这些字段。
 - **采集解析层是 `backend/app/parsers.py`**（参考只读的 `旧后端/log-backend/src/main/python/`）。最容易踩的坑都在这四个数字上：时间必须先转 UTC `datetime`（MySQL 不接受 `2026-10-02T09:31:59Z`、`2026-10-02 20:03:18 +0800`，否则 **1292**）；整型列空值写 `NULL` 而不是 `""`（否则 **1366**）；字符串按列宽截断（否则 **1406**）；行字段必须按 `catalog.LINUX_TABLE_FIELDS` / `WINDOWS_TABLE_FIELDS` 裁剪（否则 **1054**）。
 - **浏览器同源连接上限是 6 条（HTTP/1.1）**：前端每个页面只保留 1 条 WebSocket（不占 HTTP 连接额度），REST 请求因此不会被长连接挤掉。历史教训：早期版本每页还额外开 1 条日志 SSE，刷新与多标签会让 SSE 累积到 6 条（`/health` 的 `realtime.sse_clients`），所有 REST 请求（含自动刷新）随之永久排队——现象是页面刷新一直转圈、心跳页无数据，而服务端毫秒级返回。`app.js` 现在不再使用 EventSource（ADR-012），并在 `pagehide` 断开 WebSocket、给 fetch 加 8 秒超时；SSE 接口仅保留给外部消费方。
 - Linux 表名 = 分类名（7 个，`app/catalog.py`），Windows 表名 = `{channel}_logs`；`services.query_category` 只校验分类名是否为 ASCII 字母/数字/下划线，**不**校验是否属于 catalog。Linux 表**列不齐**：`hostname`/`source_address` 部分表没有，关键词查询与 `/api/v1/logs/recent` 必须按表适配（见 `docs/DATABASE.md` §4.3）。

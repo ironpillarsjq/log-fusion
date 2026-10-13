@@ -78,6 +78,7 @@ log-fusion/
 | 实时 | sse-starlette 3.5.0、FastAPI WebSocket |
 | 浏览器 UI | Bootstrap 5.3.3、HTMX 2.0.4、Alpine.js 3.14.8、ECharts 5.5.1（自托管于 `frontend/vendor/`） |
 | 数据库 | MySQL：`linux_logs`、`windows_logs`、`log_fusion`、`log_hash` |
+| 迁移 | `alembic==1.20.0` 已在 `requirements.txt` 中，但仓库内没有 `alembic.ini` 或迁移脚本；建表仍靠 `create_all()` 与 `docs/sql/*.sql`（见 `docs/DATABASE.md` §9） |
 
 仓库没有前端构建步骤；四个前端库已自托管在 `frontend/vendor/`（见 ADR-011），页面不依赖公网 CDN，断网也能完整加载。
 
@@ -141,7 +142,7 @@ python run.py
 python -m pytest        # 在仓库根目录执行
 ```
 
-测试位于 `tests/`：通过类级 patch 禁用 `Engine.connect/begin`，并把连接参数指向不可用占位值，因此**不连接任何数据库**，可在无 MySQL 环境重复运行。当前覆盖类别名校验、列表/导出取数上限、关键词与最近日志的列适配、采集解析（时间/auditd 映射/Windows 字段/按表裁剪）与入库失败分阶段上报、心跳状态阈值、静态资源与模板契约、以及路由与 `docs/API.md` §2 的一致性。仍没有 lint / typecheck 配置。
+测试位于 `tests/`（当前 **166 个用例**）：通过类级 patch 禁用 `Engine.connect/begin`，并把连接参数指向不可用占位值，因此**不连接任何数据库**，可在无 MySQL 环境重复运行。覆盖类别名校验、列表/导出取数上限、关键词与最近日志的列适配、采集解析（时间/auditd 映射/Windows 字段/按表裁剪）与入库失败分阶段上报、心跳状态阈值、静态资源与模板契约、路由与 `docs/API.md` §2 的一致性、存证哈希口径（`hashing.py`）、存证接口 503 语义与 errno 1062 判定、归档「落盘校验通过才删除」等不变量，以及 `docs/` 与代码的文档一致性（`test_doc_sync.py`）。仍没有 lint / typecheck 配置。
 
 ## 7. 发送模拟数据
 
@@ -177,7 +178,8 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
   "databases": {
     "linux_logs": true,
     "windows_logs": true,
-    "log_fusion": true
+    "log_fusion": true,
+    "log_hash": true
   }
 }
 ```

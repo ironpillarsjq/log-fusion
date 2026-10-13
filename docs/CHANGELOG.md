@@ -4,6 +4,44 @@
 
 ## Unreleased
 
+### Docs — 2026-10-13（文档与真实代码/数据库逐条核对后的修正）
+
+- 触发：全面复核 `docs/`、`AGENTS.md`、`backend/README.md` 与代码及**四个真实库**的一致性。
+  本次数据库访问**全部只读**（`information_schema` + `SELECT`），未执行任何 DDL/DML。发现并修正：
+  - `docs/API.md` §1 称「只有一个中间件，对所有 `/static/*` 加 `no-cache`」，与 `_cache_policy` 的三类策略
+    （`/static/vendor/*` → `max-age=31536000, immutable`、其他 `/static/*` → `no-store`、HTML → `no-store`）不符。
+  - `docs/sql/archive_log.sql` 与 `docs/DATABASE.md` §3.3 写 `file_sha256 CHAR(64)` 并多带一个
+    `ix_archive_log_created_at`；**真实表是 `varchar(64)`、索引只有 `ix_archive_log_mode` + 主键**
+    （即 `create_all()` 的形态）→ DDL 与文档按真实表改正。
+  - `docs/DATABASE.md` §3.2 补注：真实 `log_hash.log_hash` 是 `char(64)` + `uq_log_hash`（与
+    `docs/sql/log_hash.sql` 一致），而单靠 `create_all()` 会建出 `varchar(64)` + `ix_log_hash_log_hash`；
+    建表应以 SQL 脚本为准，两种形态已在文档中写明。
+  - `log_fusion` 库实际有 **3 张表**，其中一张是 **0 行的遗留空表 `log_hash`**（`LOG_HASH_DB` 拆分前由
+    `create_all()` 建在此处）：补入 `DATABASE.md` §1/§10、`AGENTS.md`，并在 `TODO.md` 低优先级登记
+    （删除属数据库变更，需单独授权，本次未动）。
+  - `docs/README.md` §8 的 `/health` 示例只有 3 个库 → 补 `log_hash`。
+  - `docs/API.md` §7.4 与接口总表把 `/api/v1/archive/preview` 描述成「待归档条数」，实际**不带参数时
+    `candidates` = 全表条数**（走的是「手动归档空区间」语义，不是自动归档候选集）→ 补充说明，
+    并注明 `/archive/manual` 会拒绝空区间、`/archive/auto` 只按 `created_at < months_ago(3)` 选取
+    （实测：34099 行、3 个日历月窗口下自动归档候选为 **0**；前端无参调用仅用于读取 `retentionMonths`）。
+    这是**文档描述问题，不是数据风险**：两条删除路径都有守卫。
+  - `docs/DECISIONS.md` ADR-007 仍写「临时采用：读 `linux_logs.audit_log_evidence`」→ 标记
+    **已被取代（2026-10-11）**，原文保留作历史，并注明其「后续」清单已完成。
+  - `docs/TODO.md`：「遗留项见下方『存证逐条校验接口』」是**悬空引用**（全文无此节）→ 补上真正的条目；
+    「三个库 / 四个库」口径统一为四个；新增 `log_fusion.log_hash` 遗留空表清理项。
+  - `README.md` §4/§6.1、`backend/README.md`、`AGENTS.md` 的「三个逻辑库」「全部走 CDN」
+    「存证读取兼容层（表缺失返回空集合）」等表述 → 更新为四库、自托管、`log_hash` 真实读取 +
+    503 语义 + `errors[].stage` 含 `hash`；§4 技术栈表补 `alembic` 说明（依赖已引入、无迁移脚本）；
+    §6.1 测试说明更新为 **166 用例**并列出新增覆盖（存证哈希、503 语义、归档不变量、文档一致性）。
+- 本次核对结论（可作为后续基线）：
+  - `linux_logs` 7 表、`windows_logs` 5 表与 `catalog.py` 的类别映射**一一对应**；
+    `backend/app/main.py` 实际 **23 条路由**与 `docs/API.md` §2 总表逐条一致（无幽灵接口、无漏记）。
+  - **存证链自校验通过**：对全部 **34099** 行执行
+    `SHA2(CONCAT(log_timestamp, CHAR(31), raw_log), 256) <> log_hash`，**不一致 0 行**。
+  - `log_fusion.archive_log` 有 2 条台账（34099 行、35 行，均为 manual），其中一条 `file_path`
+    是相对路径、另一条是 `D:\log-fusion\...`，对应「归档目录锚定仓库根」修复前后的两次运行。
+- 本次**无代码变更**、无接口行为变化；`docs/` 一致性由 `tests/test_doc_sync.py` 继续守护。
+
 ### Fixed — 2026-10-12（存证故障被伪装成「0 条」与「已存证」）
 
 排查「存证页显示 0 条、但数据库里明明有数据」时发现的两个缺陷，都属于

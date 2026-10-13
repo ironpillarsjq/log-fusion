@@ -15,6 +15,11 @@
 
 > 2026-10-11 起存证读写全部走 `log_hash` 库；旧的 `linux_logs.audit_log_evidence` 在真实库中并不存在，
 > 相关代码路径已移除（详见 §3.2）。
+>
+> 2026-10-13 只读核验：`log_fusion` 库实际有 **3 张表**——`client_status`、`archive_log`，
+> 以及一张 **0 行的遗留空表 `log_hash`**（`LOG_HASH_DB` 拆分前由 `create_all()` 建在此处，
+> 形态是 `varchar(64)` + `ix_log_hash_log_hash`，与 `log_hash` 库里的真实存证表不同）。
+> 当前代码不读写它；是否删除见 §10 第 5 条。
 
 所有连接 URL 使用 `mysql+pymysql` 和 `charset=utf8mb4`，开启 `pool_pre_ping=True` 与 `pool_recycle=1800`。四个库之间没有跨库事务。
 
@@ -90,6 +95,11 @@ watchdog 每 5 秒读取全表并在状态变化时提交。API 响应还会根�
 | `event_time` | `DATETIME` | 是 | 索引 | 解析后的 UTC 时间，仅用于查询排序，**不参与哈希** |
 | `created_at` | `DATETIME` | 否 | 服务端默认 `NOW()` | 服务端入库时间 |
 
+> **上表写的是 ORM 声明，真实列以 `docs/sql/log_hash.sql` 为准**（2026-10-13 只读核验）：
+> 真实 `log_hash.log_hash` 的 `log_hash` 列是 `char(64)`、唯一索引名是 `uq_log_hash`，与 SQL 脚本一致；
+> 而只靠 `create_all()` 建表会得到 `varchar(64)` + `ix_log_hash_log_hash`（遗留的 `log_fusion.log_hash`
+> 正是这种形态）。两者结构不同，**建表请用 `docs/sql/log_hash.sql`**。
+
 #### 哈希输入定义（存证可复算的前提）
 
 ```
@@ -128,10 +138,13 @@ log_hash = sha256_hex( timestamp原始字符串 + "\x1f" + log原始字符串 )
 | `file_path` | VARCHAR(512) | 归档 CSV 的绝对路径 |
 | `row_count` | BIGINT | 写入 CSV 的记录数 |
 | `deleted_count` | BIGINT | 实际删除的行数（正常应等于 `row_count`） |
-| `file_sha256` | CHAR(64) | CSV 文件内容摘要，可校验归档文件未被改动 |
+| `file_sha256` | VARCHAR(64) | CSV 文件内容摘要，可校验归档文件未被改动 |
 | `range_start` / `range_end` | DATETIME | 手动归档的时间区间（按 `created_at`） |
 | `before_time` | DATETIME | 自动归档的截止时间（`created_at < before_time`） |
 | `created_at` | DATETIME | 归档时间 |
+
+> 2026-10-13 只读核验：真实表与上表一致——`file_sha256` 是 `varchar(64)`，索引只有
+> `ix_archive_log_mode` 与主键（**没有** created_at 索引）。`docs/sql/archive_log.sql` 已按此改正。
 
 #### 归档策略与安全约束
 
@@ -294,7 +307,7 @@ SELECT * FROM audit_log_evidence ORDER BY received_at DESC LIMIT 1000
 2. 7 张 Linux 表是否都实际拥有关键词和 recent 查询依赖的字段：**已于 2026-10-10 只读核验**，结论见 §4.3，代码已按表适配。
 3. 5 张 Windows 表的字段类型，以及 `eventdata`/`system_extra` 是 TEXT 还是 JSON；列名已核验且与代码依赖一致。
 4. `audit_log_evidence` 的正式归属与数据生产方：**已于 2026-10-11 确认废弃**，真实库中不存在且已无代码依赖（见 §6）。
-5. `client_status` 的实际索引名称与 `updated_at` 数据库行为；已核验 `log_fusion` 库仅有这一张表且列与 ORM 模型一致，索引名称待核验。
+5. `client_status` 的真实索引名称与 `updated_at` 数据库行为仍待核验（列已核验且与 ORM 一致）。`log_fusion` 库实际有 **3 张表**：`client_status`、`archive_log`，以及**遗留空表 `log_hash`（0 行）**——它是 `LOG_HASH_DB` 拆分前由 `create_all()` 建在这里的，当前代码不读写；**是否删除需单独确认**（删除属于数据库变更，不在文档修正范围内）。
 6. 应用账号所需的最小权限，以及生产是否允许应用执行 DDL。
 7. 生产环境的归档保留期（当前默认 3 个月）、归档文件存放位置与异地备份要求；
    归档 CSV 目前永久保留，磁盘容量规划待确认。

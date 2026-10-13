@@ -10,7 +10,10 @@
 - 多数查询接口成功响应为 `{ "code": 0, "message": "ok", "data": ... }`，但健康检查、采集写入、心跳、HTML、SSE、WebSocket 和 CSV 不使用该包装。
 - 未被业务代码捕获的异常由 FastAPI 返回 500；查询参数或请求体不满足类型/范围时通常返回 422。
 - 框架自动提供 `/docs`、`/redoc` 和 `/openapi.json`。
-- 当前只有一个自定义 HTTP 中间件：对所有 `/static/*` 响应加 `Cache-Control: no-cache`（避免浏览器缓存旧 `app.js`）。没有请求 ID、版本协商、速率限制、CORS 或统一错误响应模型。
+- 当前只有一个自定义 HTTP 中间件 `_cache_policy`（`backend/app/main.py`），按三类设置 `Cache-Control`：
+  `/static/vendor/*` → `public, max-age=31536000, immutable`（自托管库文件名带版本号）；
+  其他 `/static/*` → `no-cache, no-store, must-revalidate`；HTML 页面 → `no-store, must-revalidate`
+  （配合模板里的 `app.js?v=` 版本参数，避免浏览器继续用旧交互代码）。没有请求 ID、版本协商、速率限制、CORS 或统一错误响应模型。
 
 ## 2. 接口总表
 
@@ -587,6 +590,12 @@ data: {"serverTime":"2026-10-10T08:00:20+00:00"}
 
 只统计、不导出、不删除，供前端二次确认。查询参数 `start`、`end`（`YYYY-MM-DD`，按 `created_at` 本地时间口径；
 `end` 自动取当天 23:59:59）。日期格式错误返回 400。
+
+**`start`/`end` 都不传时 `candidates` 等于全表条数**（2026-10-13 实测：`log_hash` 34099 行时为 34099），
+因为这走的是「手动归档的空区间」语义，**不是**自动归档的候选集。自动归档候选按
+`created_at < months_ago(retentionMonths)` 计算（同一时刻按 3 个日历月算是 0 条）；
+真正的删除动作受 §7.5/§7.6 约束——`/archive/manual` 拒绝空区间、`/archive/auto` 只按该截止时间选取。
+前端只在初始化时无参调用本接口读取 `retentionMonths`，归档预览一律带 `start`/`end`。
 
 ```json
 {
