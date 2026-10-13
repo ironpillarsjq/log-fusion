@@ -4,16 +4,24 @@
 
 ## 1. 项目目标与状态
 
-Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux 审计日志与 Windows 事件日志，提供分类入库、统计查询、CSV 导出、SSE 实时通知、客户端心跳监控和原始日志存证。
+Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux 审计日志与 Windows 事件日志，提供分类入库、统计查询、CSV 导出、客户端心跳实时监控（WebSocket）、原始日志 SHA-256 存证与归档。
 
-当前项目处于开发中期：核心查询、采集写入、原始日志 SHA-256 存证与归档、仪表盘、持久化心跳和前端心跳实时通道（WebSocket + 断线重连 + 假死检测）已经具备；认证授权、正式数据库迁移、存证逐条校验接口、可靠的多订阅者实时分发和自动化测试尚未完成。
+当前项目处于开发中期：核心查询、采集写入、原始日志 SHA-256 存证与归档、仪表盘、持久化心跳、实时通道（WebSocket，含断线重连与假死检测，SSE 已移除）和**实时动态图表看板**已经具备；认证授权、正式数据库迁移、存证逐条校验接口、多实例实时广播（当前必须单 worker）和集成测试/CI 尚未完成（已有 210 个不连库的契约用例，其中 21 个归档用例需要 `tmp_path`）。
 
 ## 2. 当前核心能力
 
-- FastAPI 提供页面、HTTP API、SSE 与 WebSocket。
-- Jinja2 在 `/` 服务端渲染仪表盘，Alpine.js 管理页面状态，HTMX 刷新数据库状态，ECharts 展示分类统计。
+- FastAPI 提供页面、HTTP API 与 WebSocket（唯一的实时通道；SSE 已于 2026-10-13 移除，见 ADR-015）。
+- Jinja2 在 `/` 服务端渲染仪表盘，Alpine.js 管理页面状态，HTMX 刷新数据库状态，ECharts 展示统计图表。
+- **实时图表看板**（2026-10-13 新增，方案与决策见 `PLAN-frontend-charts.md`）：运行概览有实时接入趋势 + 平台占比半环仪表，客户端心跳监控有延迟趋势 + 状态分布（**在线率仪表与客户端延迟排行已按需求移除**，在线率仍在指标卡上显示），融合日志管理下新增二级子页**日志统计图表**（接入趋势、24 小时×星期热力图、TOP 主机/类别排行）。图表数据全部来自服务端聚合接口（`metrics.py`，带 TTL 缓存），前端不自己累积历史。
+  - 心跳页的延迟图**只展示未掉线的客户端**：离线时「延迟」等于心跳年龄，只会一路涨到无意义的大值，因此延迟趋势按状态过滤并在图下注明排除了几个离线客户端。
+  - 延迟趋势与概览「接入趋势」同一套视觉：主序列（平均延迟）是**渐变面积折线**，客户端细线细而半透明（1px、opacity 0.35）、退到背景，平均延迟线宽 2px（只比背景线粗一档）。
+  - 曲线**按原始采样值直接画折线**（`smooth:false`，不做 EWMA、不做滑动平均）：平滑会掩盖单点尖峰，而尖峰正是这张图要看的东西，2026-10-13 按需求取消平滑（改回之前的中间版本见 `CHANGELOG.md`）。
+  - 唯一保留的「稳定观感」措施是**纵轴锚定**（`niceDelayMax()`，`DELAY_AXIS_FLOOR` 下限 5 秒）：自动缩放的纵轴会把 3~4 秒之间的小波动撑满整个高度，看起来像剧烈震荡。延迟逼近 10 秒（在线/延迟分界阈值）时，图上会出现一条 `延迟阈值 10s` 参考线。
+  - 所有图表统一走 `app.js` 的 `paint()`：数据没变就不重画、只有数据变就合并更新、只有序列结构变才重建——这样 WebSocket 每 5 秒推送时不会把整张图重新播一遍动画（否则页面会一直闪），见 `ARCHITECTURE.md` §4.2。
+- 左侧导航是二级菜单（仅「融合日志管理」有子菜单），五个页面都有 URL hash 深链（`#/overview`、`#/heartbeat`、`#/logs`、`#/log-stats`、`#/evidence`），刷新后停在原页面。导航下方是「服务连接」状态卡：四个库各一行（状态点 + 中文名 + 真实库名 + 已连接/不可用，HTMX 每 30 秒刷新片段）+ 浏览器自己的 WebSocket 实时通道行。
+- **运行概览**含「哈希存证」面板：存证总数、一致/哈希异常/原始缺失的占比条与计数（`/api/v1/evidence/summary`，30 秒一轮）。存证库查询失败时面板显示「存证库不可用」而不是 0——原先概览里那三行写死的「系统状态」徽标已移除，连接状态统一看侧栏卡片。
 - 查询 7 类 Linux 日志表和 5 类 Windows 日志表；融合日志列表按 **30 条/页**分页（可翻页，支持平台/类别/关键词筛选）。
-- 接收 Linux/Windows 日志：`parsers.py` 把原始记录解析成数据库行（含时间归一化与按表裁剪），再批量入库；响应用 `inserted`/`skipped`/`failed`/`hashed`/`errors[].stage` 区分“解析失败”“入库失败”和“存证跳过”，并始终尝试发送实时事件。
+- 接收 Linux/Windows 日志：`parsers.py` 把原始记录解析成数据库行（含时间归一化与按表裁剪），再批量入库；响应用 `inserted`/`skipped`/`failed`/`hashed`/`errors[].stage` 区分“解析失败”“入库失败”和“存证跳过”。
 - 每条日志入库前由 `hashing.py` 按 `sha256(timestamp + 0x1F + log)` 计算摘要，把原始 `log` 原文与摘要写入 `log_hash.log_hash`（唯一索引去重；缺 `log` 则跳过存证且不影响入库）。
 - **完整性存证页**展示 `log_hash` 真实存证记录，按 **30 条/页**分页，可按平台与关键词筛选。
 - **存证归档**：把历史存证导出为 CSV 再从数据库删除，分两种方式——
@@ -21,7 +29,7 @@ Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux �
   **手动归档**（页面上选时间区间导出）。导出文件永久保留在 `data/archive/`，
   且**只有确认文件落盘并校验一致后才执行删除**，失败时一条都不删。
 - 在 `log_fusion.client_status` 中持久化客户端心跳，按 10 秒/30 秒阈值计算在线、延迟、离线状态。
-- 通过 `/ws/client-monitor` 广播心跳快照（每次心跳成功时，以及后台每 5 秒的巡检轮次；页面已接入该通道并实现断线重连与假死检测），通过 `/api/v1/logs/stream` 推送日志事件。
+- 通过 `/ws/client-monitor` 广播心跳快照（每次心跳成功时，以及后台每 5 秒的巡检轮次；页面已接入该通道并实现断线重连与假死检测）——这是**唯一**的实时通道；采集侧不再推送逐条日志事件（原 `/api/v1/logs/stream` 已于 2026-10-13 移除，ADR-015）。
 
 ## 3. 代码范围
 
@@ -34,6 +42,7 @@ log-fusion/
 │   │   ├── db.py               # 四个 MySQL Engine 与会话
 │   │   ├── models.py           # client_status、log_hash、archive_log ORM 模型
 │   │   ├── services.py         # 日志查询与统计
+│   │   ├── metrics.py          # 图表聚合：趋势/排行 TTL 缓存 + 心跳历史环形缓冲
 │   │   ├── parsers.py          # 采集记录解析（auditd/syslog/winlog → 数据库行）
 │   │   ├── hashing.py          # 原始日志 SHA-256 存证行构造
 │   │   ├── archive.py          # 存证归档：导出 CSV + 校验落盘 + 按 id 删除
@@ -54,6 +63,7 @@ log-fusion/
 ├── data/archive/               # 归档 CSV 落盘目录（运行期产物，已在 .gitignore 中）
 ├── tests/                      # pytest 单元/契约测试（不连接数据库）
 ├── tools/                      # .cmd 启动器的 ASCII 转发脚本；chart-layout-check.cjs（概览环形图布局自检）；
+│                               # chart-render-check.cjs（全部图表的服务端渲染/空态/越界自检，可接 --live=URL 跑真实数据）；
 │                               # restore_archive.py（把归档 CSV 导回 log_hash，默认只预览）
 ├── 旧前端/                     # 遗留 Vue SPA，只读参考
 ├── 旧后端/                     # 遗留 Spring Boot，只读参考
@@ -75,7 +85,7 @@ log-fusion/
 | 数据访问 | SQLAlchemy 2.1.4、PyMySQL 1.2.3 |
 | 配置 | pydantic-settings 2.15.0 |
 | 模板 | Jinja2 3.1.6 |
-| 实时 | sse-starlette 3.5.0、FastAPI WebSocket |
+| 实时 | FastAPI WebSocket（唯一实时通道；原 sse-starlette 已于 2026-10-13 移除，ADR-015） |
 | 浏览器 UI | Bootstrap 5.3.3、HTMX 2.0.4、Alpine.js 3.14.8、ECharts 5.5.1（自托管于 `frontend/vendor/`） |
 | 数据库 | MySQL：`linux_logs`、`windows_logs`、`log_fusion`、`log_hash` |
 | 迁移 | `alembic==1.20.0` 已在 `requirements.txt` 中，但仓库内没有 `alembic.ini` 或迁移脚本；建表仍靠 `create_all()` 与 `docs/sql/*.sql`（见 `docs/DATABASE.md` §9） |
@@ -142,7 +152,15 @@ python run.py
 python -m pytest        # 在仓库根目录执行
 ```
 
-测试位于 `tests/`（当前 **166 个用例**）：通过类级 patch 禁用 `Engine.connect/begin`，并把连接参数指向不可用占位值，因此**不连接任何数据库**，可在无 MySQL 环境重复运行。覆盖类别名校验、列表/导出取数上限、关键词与最近日志的列适配、采集解析（时间/auditd 映射/Windows 字段/按表裁剪）与入库失败分阶段上报、心跳状态阈值、静态资源与模板契约、路由与 `docs/API.md` §2 的一致性、存证哈希口径（`hashing.py`）、存证接口 503 语义与 errno 1062 判定、归档「落盘校验通过才删除」等不变量，以及 `docs/` 与代码的文档一致性（`test_doc_sync.py`）。仍没有 lint / typecheck 配置。
+测试位于 `tests/`（当前 **210 个用例**，其中 21 个归档用例需要 `tmp_path`，在受限沙箱外实测 210 个全部通过）：通过类级 patch 禁用 `Engine.connect/begin`，并把连接参数指向不可用占位值，因此**不连接任何数据库**，可在无 MySQL 环境重复运行。覆盖类别名校验、列表/导出取数上限、关键词与最近日志的列适配、采集解析（时间/auditd 映射/Windows 字段/按表裁剪）与入库失败分阶段上报、心跳状态阈值、WebSocket 建连快照与连接计数、图表聚合接口（趋势/排行的参数校验与 TTL 缓存、心跳历史环形缓冲）、静态资源与模板契约、**前端图表接线契约**（模板里的每个图表容器都必须有对应的 `getChart()`、页面卸载要释放图表实例、时间桶必须按本地时区渲染）、路由与 `docs/API.md` §2 的一致性（含 SSE 已移除的守卫）、存证哈希口径（`hashing.py`）、存证接口 503 语义与 errno 1062 判定、归档「落盘校验通过才删除」等不变量，以及 `docs/` 与代码的文档一致性（`test_doc_sync.py`）。仍没有 lint / typecheck 配置。
+
+图表本身另有两个不依赖浏览器的自检（改动图表后手工执行，见 §8）：
+
+```powershell
+node tools\chart-layout-check.cjs                     # 概览环形图的几何/图例布局
+node tools\chart-render-check.cjs                     # 全部图表的渲染、空态、文字越界、防闪屏
+node tools\chart-render-check.cjs --live=http://127.0.0.1:8080   # 追加真实接口数据
+```
 
 ## 7. 发送模拟数据
 
@@ -162,7 +180,7 @@ $env:PYTHONPATH = (Get-Location).Path
 python .\simulator\send_simulated_clients.py --url http://127.0.0.1:8080 --count 3
 ```
 
-`--count 0` 表示持续发送；默认间隔 3 秒；`--clients` 可覆盖客户端标识列表。模拟器自身的 URL 默认值仍是 `http://127.0.0.1:8000`，因此直接调用时应显式传 `--url`。
+`--count 0` 表示持续发送；默认间隔 3 秒；`--clients` 可覆盖客户端标识列表。模拟器自身的 URL 默认值已与启动脚本一致（`http://127.0.0.1:8080`，2026-10-13 由 8000 改齐），直接调用无需再显式传 `--url`。
 
 ## 8. 健康检查与排障
 
@@ -197,10 +215,17 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
   需要把归档数据放回库里（恢复误删或继续测试）时用 `python tools/restore_archive.py data/archive/<文件>.csv`——默认只预览，确认后加 `--apply` 才写库；靠唯一索引幂等跳过已有记录。
 - 归档文件找不到：`archive_dir` 的相对路径按**仓库根**解析（`<repo>/data/archive`），
   不是进程工作目录；接口 `/api/v1/archive/preview` 会返回实际使用的绝对路径。
-- 页面元素错位或图表空白：确认 `/static/vendor/` 下文件返回 200（依赖已自托管，不再需要公网）。改动概览环形图布局后，用 `node tools/chart-layout-check.cjs` 自检（真实 `app.js` + 真实 ECharts 服务端渲染，断言图例与图形不重叠、内容不被裁掉）。
+- 页面元素错位或图表空白：确认 `/static/vendor/` 下文件返回 200（依赖已自托管，不再需要公网）。图表改动用两个自检工具定位（真实 `app.js` + 真实 ECharts 服务端渲染）：
+  `node tools\chart-layout-check.cjs` 断言概览环形图的图例与图形不重叠、内容不被裁掉；
+  `node tools\chart-render-check.cjs`（加 `--live=http://127.0.0.1:8080` 会用真实接口数据）断言所有图表都能渲染、空数据要画出「暂无」空态、文字不被顶出画布、热力图恰好 7×24 格，以及「重复推送同一份数据不得重画」（防闪屏）。
+- 图表有图但全是 0：先分辨「窗口内确实没有日志」和「接口查询失败」——趋势/排行接口查询失败返回 **500**（页面弹出错误提示条），不会降级成全 0；心跳历史接口返回空序列则说明**进程刚重启**（历史缓冲在内存里），页面会写明这一原因。
+- 图表一直在闪／整张图反复重播动画：说明有代码绕过了 `app.js` 的 `paint()` 直接 `setOption`，或者每次都带 `replaceMerge`。实时推送很密（WS 5 秒、概览汇总 2 秒），必须让「数据没变就不重画、只有数据变才合并更新」；`tests/test_frontend_contracts.py` 会断言 `setOption` 只在 `paint` 内出现一次，`node tools\chart-render-check.cjs` 里也有一节专门验证「重复推送不得重画」。
+- 心跳页看不到某台机器的延迟曲线：先确认它是不是**离线**——离线客户端按设计不展示心跳延迟（延迟会随掉线时间无限增长），状态分布甜甜圈里仍能看到它的离线状态。
+- 图表趋势整体偏 8 小时：后端时间桶一律 UTC（`...Z`），本地化只在前端做；擅自改成直接截取 ISO 字符串当横轴就会出现这个现象（`tests/test_frontend_contracts.py` 有守卫）。
+- 图表数据不刷新：新聚合接口都带服务端 TTL 缓存（趋势 `1h` 5 秒、`24h` 15 秒、`7d`/`30d` 60 秒、排行 60 秒），响应里的 `cached`/`ageMs`/`generatedAt` 就是用来判断「是缓存还是没刷新」的；页面图表下方也直接显示这行新鲜度。
 - 局域网无法访问：检查防火墙规则和代理/TUN 网卡；服务脚本无管理员权限时只打印补救命令。
 - 模拟脚本启动失败：确认样例文件 `C:\Users\ironp\Desktop\data\linux\raw-logs.log` 与 `windows\raw-logs.log` 存在且非空，或用 `-DataDir` 指向正确目录。
-- 心跳跨重启保留但实时连接丢失：数据在 MySQL，WebSocket 连接和日志 SSE 队列仅存在于进程内。
+- 心跳跨重启保留但实时连接丢失：数据在 MySQL，WebSocket 连接只存在于进程内。
 
 ## 9. 文档导航
 
@@ -210,6 +235,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
 - [开发日志](./CHANGELOG.md)
 - [技术决策](./DECISIONS.md)
 - [待开发任务](./TODO.md)
+- [图表增强与二级导航实施方案](./PLAN-frontend-charts.md)（2026-10-13 已实施，含实施记录与偏差）
 
 ## 10. 文档事实边界
 

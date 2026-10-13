@@ -1,4 +1,4 @@
-"""main.py 的接口契约：路由与文档一致、心跳状态判定、采集降级行为、SSE 摘要字段。
+"""main.py 的接口契约：路由与文档一致、心跳状态判定、采集解析/降级、健康检查与缓存策略。
 
 硬约束：所有用例都 monkeypatch 掉落库函数，且 conftest 已禁用 Engine.connect/begin，
 因此整个文件不会连接任何数据库，也不会写入真实数据。
@@ -18,26 +18,26 @@ from app import main
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-class RecordingQueue:
-    """替代 main.event_queue，记录 SSE 事件而不涉及真实协程队列。"""
-
-    def __init__(self):
-        self.items = []
-
-    async def put(self, item):
-        self.items.append(item)
-
-
 @pytest.fixture
 def client():
     return TestClient(main.app)
 
 
 @pytest.fixture
-def queue(monkeypatch):
-    recorder = RecordingQueue()
-    monkeypatch.setattr(main, "event_queue", recorder)
-    return recorder
+def written(monkeypatch):
+    """记录「将要写入业务表」的行，替代已移除的 SSE 摘要断言（`summary` 之外的真实产物）。
+
+    只跳过落库动作，解析仍走真实实现，因此可以断言映射结果（表名、category、时间归一化）。
+    """
+    captured: list[tuple[int, str, dict]] = []
+
+    def fake_persist_rows(engine, entries):
+        captured.extend(entries)
+        return len(entries), []
+
+    monkeypatch.setattr(main, "_persist_rows", fake_persist_rows)
+    monkeypatch.setattr(main, "_persist_evidence", lambda platform, records, event_times: (len(records), []))
+    return captured
 
 
 # --- 路由与文档一致性 ---------------------------------------------------------
@@ -74,8 +74,8 @@ def test_documented_routes_match_application():
 
 
 def test_documented_route_count():
-    """docs/API.md §2 的接口总表当前有 23 条；新增/删除接口时同步更新此断言。"""
-    assert len(_documented_routes()) == 23
+    """docs/API.md §2 的接口总表当前有 25 条；新增/删除接口时同步更新此断言。"""
+    assert len(_documented_routes()) == 25
 
 
 # --- 心跳状态阈值与载荷 -------------------------------------------------------
@@ -131,7 +131,7 @@ def test_build_snapshot_counts_states(monkeypatch):
 
 @pytest.fixture
 def no_db_write(monkeypatch):
-    """只跳过真正的写库：解析仍走真实实现，用于验证解析→响应→SSE 的契约。"""
+    """只跳过真正的写库：解析仍走真实实现。"""
     monkeypatch.setattr(main, "_persist_rows", lambda engine, entries: (len(entries), []))
     monkeypatch.setattr(main, "_persist_evidence", lambda platform, records, event_times: (len(records), []))
 
@@ -146,7 +146,7 @@ def test_platform_is_case_insensitive(client, no_db_write):
     assert client.post("/api/v1/logs/LINUX", json=[]).status_code == 200
 
 
-def test_ingest_normalized_payload_is_parsed_and_streamed(client, queue, no_db_write):
+def test_ingest_normalized_payload_is_parsed_and_stored(client, written):
     response = client.post("/api/v1/logs/linux", json=[{
         "client_id": "linux-001",
         "normalized": {
@@ -161,26 +161,29 @@ def test_ingest_normalized_payload_is_parsed_and_streamed(client, queue, no_db_w
         "accepted": 1, "persisted": True, "inserted": 1, "skipped": 0, "failed": 0,
         "hashed": 1, "errors": [],
     }
-    assert queue.items == [{
-        "platform": "linux",
-        "category": "file_object_access",
-        "eventTime": "2026-10-10T08:00:00",
-    }]
+    # 解析结果落在「准备写入的行」上：表名由 category 决定，时间已归一化
+    index, table, row = written[0]
+    assert index == 0
+    assert table == "file_object_access"
+    assert row["category"] == "file_object_access"
+    assert "2026-10-10 08:00" in str(row["event_time"])
 
 
-def test_ingest_raw_syslog_goes_to_authentication_session(client, queue, no_db_write):
+def test_ingest_raw_syslog_goes_to_authentication_session(client, written):
     response = client.post("/api/v1/logs/linux", json=[{
         "client_id": "linux-001",
         "timestamp": "2026-10-10T08:00:00Z",
         "log": "Oct 10 16:00:01 server-a CRON[4359]: pam_unix(cron:session): session opened for user root(uid=0)",
     }])
     assert response.json()["inserted"] == 1
-    assert queue.items[0]["category"] == "authentication_session"
-    assert queue.items[0]["eventTime"] == "2026-10-10T08:00:00"
+    _index, table, row = written[0]
+    assert table == "authentication_session"      # auditd/syslog 的类型映射
+    assert row["type"] == "SYSLOG"
+    assert row.get("account") == "root"           # 从 pam 行里抽取的账号
 
 
 @pytest.mark.parametrize("channel_key", ["channel", "Channel"])
-def test_ingest_windows_event_is_parsed(client, queue, no_db_write, channel_key):
+def test_ingest_windows_event_is_parsed(client, written, channel_key):
     response = client.post("/api/v1/logs/windows", json=[{
         "client_id": "windows-001",
         "TimeGenerated": "2026-10-10 08:00:00 +0800",
@@ -191,19 +194,21 @@ def test_ingest_windows_event_is_parsed(client, queue, no_db_write, channel_key)
         channel_key: "Security",
     }])
     assert response.json()["inserted"] == 1
-    assert queue.items[0]["category"] == "Security"
-    assert queue.items[0]["eventTime"] == "2026-10-10T00:00:00"   # +0800 → UTC
+    _index, table, row = written[0]
+    assert table == "security_logs"
+    assert "2026-10-10 00:00" in str(row["time_created"])   # +0800 → UTC
 
 
-def test_ingest_parse_failure_is_reported_as_parse(client, queue, no_db_write):
+def test_ingest_parse_failure_is_reported_as_parse(client, written):
     response = client.post("/api/v1/logs/linux", json=[{"client_id": "c", "log": "没有任何时间信息的一行"}])
     payload = response.json()
     assert payload["persisted"] is False
     assert payload["skipped"] == 1 and payload["failed"] == 0
     assert payload["errors"][0]["stage"] == "parse"
+    assert written == []            # 解析失败就不该有任何行进入写入路径
 
 
-def test_ingest_insert_failure_is_reported_as_insert(client, queue):
+def test_ingest_insert_failure_is_reported_as_insert(client):
     """不 mock 写入：conftest 已禁用 Engine.begin，因此入库必定失败且要能报出来。"""
     response = client.post("/api/v1/logs/linux", json=[{
         "client_id": "c", "timestamp": "2026-10-10T08:00:00Z", "log": "x",
@@ -213,21 +218,21 @@ def test_ingest_insert_failure_is_reported_as_insert(client, queue):
     assert payload["persisted"] is False
     assert payload["inserted"] == 0 and payload["failed"] == 1 and payload["skipped"] == 0
     assert payload["errors"][0]["stage"] == "insert"
-    assert len(queue.items) == 1
 
 
 @pytest.mark.parametrize("payload", [[1], ["text"], [None], [True]])
-def test_ingest_non_object_records_are_reported_not_raised(client, queue, no_db_write, payload):
+def test_ingest_non_object_records_are_reported_not_raised(client, written, payload):
     response = client.post("/api/v1/logs/linux", json=payload)
     assert response.status_code == 200
     assert response.json()["skipped"] == 1
     assert response.json()["errors"][0]["stage"] == "parse"
-    assert queue.items[0] == {"platform": "linux", "category": None, "eventTime": None}
+    assert written == []
 
 
-def test_ingest_accepts_single_object_body(client, queue, no_db_write):
+def test_ingest_accepts_single_object_body(client, written):
     response = client.post("/api/v1/logs/linux", json={"timestamp": "2026-10-10T08:00:00Z", "log": "x"})
     assert response.json()["inserted"] == 1
+    assert len(written) == 1
 
 
 # --- 心跳接口 -----------------------------------------------------------------
@@ -259,6 +264,19 @@ def test_heartbeat_persist_failure_returns_503(client, monkeypatch):
 
 def test_heartbeat_rejects_non_list_body(client):
     assert client.post("/api/v1/heartbeat", json={"client_id": "c"}).status_code == 422
+
+
+# --- WebSocket：唯一实时通道 --------------------------------------------------
+
+def test_websocket_sends_snapshot_on_connect(client, monkeypatch):
+    """建连立即收到一条完整心跳快照（ADR-015：SSE 移除后这是唯一的主动推送路径）。"""
+    snapshot = {"total_clients": 2, "online_clients": 2, "delayed_clients": 0,
+                "offline_clients": 0, "clients": [{"client_id": "a"}]}
+    monkeypatch.setattr(main, "_snapshot_sync", lambda: snapshot)
+    with client.websocket_connect("/ws/client-monitor") as ws:
+        assert ws.receive_json() == snapshot
+        assert main.ws_manager.connection_count == 1
+    assert main.ws_manager.connection_count == 0
 
 
 # --- 查询参数校验（在访问数据库之前返回）--------------------------------------
@@ -294,12 +312,55 @@ def test_health_route_reports_three_databases(client, monkeypatch):
     assert payload["databases"] == {"linux_logs": True, "windows_logs": False, "log_fusion": True}
 
 
-def test_health_reports_realtime_connection_counts(client, monkeypatch):
+def test_health_reports_realtime_connection_count(client, monkeypatch):
     """实时连接数必须可从 /health 看到：连接被占满时页面整体卡死，服务端却毫秒级返回。"""
-    monkeypatch.setattr(main, "sse_clients", 3)
     monkeypatch.setattr(type(main.ws_manager), "connection_count", property(lambda self: 2))
     payload = client.get("/health").json()
-    assert payload["realtime"] == {"sse_clients": 3, "ws_clients": 2}
+    assert payload["realtime"] == {"ws_clients": 2}
+
+
+ALL_DATABASES = ("linux_logs", "windows_logs", "log_fusion", "log_hash")
+
+
+def test_db_status_partial_renders_connection_rows(client, monkeypatch):
+    """侧栏「服务连接」卡片片段：每个库一行 + 一行汇总，状态只来自本次真实探测。
+
+    片段会直接进页面，所以这里锁住三件事：四个库都出现、汇总数量正确、
+    「部分可用」时仍然逐行显示真实状态（不能因为有一个库挂了就整块变色）。
+    """
+    monkeypatch.setattr(main, "db_health", lambda: {
+        "linux_logs": True, "windows_logs": False, "log_fusion": True, "log_hash": True})
+    response = client.get("/partials/db-status")
+    assert response.status_code == 200
+    html = response.text
+    assert "3/4 个库" in html and "部分可用" in html
+    for key in ALL_DATABASES:
+        assert key in html, f"片段里缺少库 {key}（侧栏放不下真实库名，用 title 悬停显示）"
+    assert "Windows 日志库" in html and "存证库" in html
+    assert "title=" in html, "真实库名必须以悬停提示的形式保留"
+    assert html.count(">已连接<") == 3
+    assert html.count(">不可用<") == 1          # 只有 windows_logs 那一行
+    assert "conn-dot bad" in html and "conn-dot ok" in html
+
+
+def test_db_status_partial_reports_total_outage_without_5xx(client, monkeypatch):
+    """全部库不可用时仍然是 HTTP 200 + 明确的「全部不可用」，不把故障变成 5xx 或旧状态。"""
+    monkeypatch.setattr(main, "db_health", lambda: {name: False for name in ALL_DATABASES})
+    response = client.get("/partials/db-status")
+    assert response.status_code == 200
+    assert "0/4 个库" in response.text and "全部不可用" in response.text
+    assert response.text.count(">不可用<") == 4
+    assert ">已连接<" not in response.text
+
+
+def test_sse_endpoint_is_removed(client):
+    """SSE 通道已于 2026-10-13 移除：实时同步统一走 WebSocket（ADR-015）。
+
+    路径不存在时会落到 `POST /api/v1/logs/{platform}` 上，因此 GET 得到 405 而不是 404，
+    两种都说明「这里没有 SSE 接口」。
+    """
+    assert client.get("/api/v1/logs/stream").status_code in (404, 405)
+    assert "sse_clients" not in client.get("/health").json()["realtime"]
 
 
 def test_static_responses_disable_cache(client):
@@ -346,11 +407,10 @@ def test_app_js_releases_long_lived_connections(client):
 
 
 def test_app_js_does_not_open_eventsource(client):
-    """前端不再订阅 SSE。
+    """前端不使用 SSE（该通道已整体移除，见 ADR-015）。
 
-    每页 1 条 SSE + 1 条 WebSocket 会占满浏览器同一地址的 6 条 HTTP/1.1 连接额度，
-    导致所有 REST 请求（含自动刷新）永久排队；改由 WebSocket 推送 + 定时 REST 刷新。
-    SSE 接口本身保留给外部消费方。
+    历史：每页 1 条 SSE + 1 条 WebSocket 会占满浏览器同一地址的 6 条 HTTP/1.1 连接额度，
+    导致所有 REST 请求（含自动刷新）永久排队；现在只保留 WebSocket + 定时 REST 刷新。
     """
     js = client.get("/static/app.js").text
     assert "EventSource" not in js

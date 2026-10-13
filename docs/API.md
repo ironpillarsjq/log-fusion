@@ -7,7 +7,7 @@
 - 默认开发地址：`http://127.0.0.1:8080`。
 - 当前没有认证或授权，请求不需要业务自定义 Header。
 - JSON 请求应发送 `Content-Type: application/json`。
-- 多数查询接口成功响应为 `{ "code": 0, "message": "ok", "data": ... }`，但健康检查、采集写入、心跳、HTML、SSE、WebSocket 和 CSV 不使用该包装。
+- 多数查询接口成功响应为 `{ "code": 0, "message": "ok", "data": ... }`，但健康检查、采集写入、心跳、HTML、WebSocket 和 CSV 不使用该包装。
 - 未被业务代码捕获的异常由 FastAPI 返回 500；查询参数或请求体不满足类型/范围时通常返回 422。
 - 框架自动提供 `/docs`、`/redoc` 和 `/openapi.json`。
 - 当前只有一个自定义 HTTP 中间件 `_cache_policy`（`backend/app/main.py`），按三类设置 `Cache-Control`：
@@ -20,13 +20,14 @@
 | 方法 | 路径 | 类型 | 用途 |
 |---|---|---|---|
 | GET | `/` | HTML | Jinja2 仪表盘 |
-| GET | `/partials/db-status` | HTML | HTMX 数据库状态片段 |
+| GET | `/partials/db-status` | HTML | 侧栏「服务连接」卡片的数据库片段（HTMX 30 秒） |
 | GET | `/health` | JSON | 四库连接健康检查 |
 | GET | `/api/v1/logs/categories` | JSON | 日志类别 |
 | GET | `/api/v1/logs/summary` | JSON | 日志总量与分类统计 |
 | GET | `/api/v1/logs/categories/{category}` | JSON | 分类分页查询 |
 | GET | `/api/v1/logs/recent` | JSON | 跨平台最近日志 |
-| GET | `/api/v1/logs/stream` | SSE | 日志事件流 |
+| GET | `/api/v1/logs/trend` | JSON | 时间桶接入趋势（UTC 桶键，服务端 TTL 缓存） |
+| GET | `/api/v1/logs/stats` | JSON | 窗口内 TOP 类别 / TOP 主机排行（服务端缓存） |
 | POST | `/api/v1/logs/{platform}` | JSON | Linux/Windows 日志采集 |
 | GET | `/api/v1/logs/export` | CSV | 分类日志导出 |
 | GET | `/api/v1/monitor/summary` | JSON | 心跳状态摘要 |
@@ -34,6 +35,7 @@
 | GET | `/api/v1/monitor/clients/{client_id}` | JSON | 客户端详情 |
 | GET | `/api/v1/monitor/clients/{client_id}/logs` | JSON | 客户端最近日志兼容接口 |
 | POST | `/api/v1/heartbeat` | JSON | 心跳上报 |
+| GET | `/api/v1/monitor/history` | JSON | 心跳历史序列（进程内环形缓冲，不查库） |
 | WebSocket | `/ws/client-monitor` | WS | 客户端状态快照广播 |
 | GET | `/api/v1/evidence/summary` | JSON | 存证状态摘要 |
 | GET | `/api/v1/evidence` | JSON | 存证列表（分页） |
@@ -53,15 +55,20 @@
 
 ### 3.2 `GET /partials/db-status`
 
-返回 HTML `<span>` 片段，依次显示 `linux_logs`、`windows_logs`、`log_fusion`、`log_hash` 是否连接。无参数。
+返回侧栏「服务连接」卡片的**数据库部分**的 HTML 片段（HTMX 每 30 秒替换一次）。无参数。
 
-示例：
+片段由「汇总行 + 四个库各一行」组成，每行是状态点 + 中文名 + 状态文字；真实库名放在该行的 `title` 上（侧栏只有 `col-lg-2` 宽，把 `linux_logs` 这类等宽文本塞进每一行会把中文标签挤成省略号）：
 
 ```html
-<span class="badge rounded-pill text-bg-success">linux_logs: 已连接</span>
+<div class="conn-row"><span class="conn-dot ok"></span><span class="conn-name">数据库</span><span class="conn-meta">4/4 个库</span><span class="conn-state ok">正常</span></div>
+<div class="conn-row conn-sub" title="Linux 日志库（linux_logs）"><span class="conn-dot ok"></span><span class="conn-name">Linux 日志库</span><span class="conn-state ok">已连接</span></div>
+<!-- windows_logs / log_fusion / log_hash 同构 -->
 ```
 
-数据库连接失败不会使接口返回 5xx；对应 badge 显示“不可用”。
+- 汇总行的数量取自**本次真实探测**：`N/4 个库`，状态文字为 `正常` / `部分可用` / `全部不可用`（对应 ok / warn / bad 三种状态点）。
+- 单个库不可用时对应行显示 `不可用`（红色状态点），**不影响其他行的结果**，也不返回 5xx。
+- 卡片里「实时通道」那一行不在本片段里：它由浏览器自己的 WebSocket 状态渲染（Alpine），因为只有页面自己知道这条连接是否活着。
+- 2026-10-13 之前该片段返回的是一串 Bootstrap badge（`linux_logs: 已连接`），随着侧栏改版一并调整；这是**展示层片段**，不构成对外接口契约。
 
 ### 3.3 `GET /health`
 
@@ -77,7 +84,6 @@
     "log_hash": true
   },
   "realtime": {
-    "sse_clients": 1,
     "ws_clients": 1
   }
 }
@@ -85,7 +91,7 @@
 
 当前实现中即使全部数据库不可用也返回 HTTP 200。
 
-`realtime.sse_clients` 是当前打开的 `/api/v1/logs/stream` 连接数，`realtime.ws_clients` 是 `/ws/client-monitor` 的连接数。两者用于排查“页面卡住但接口很快”的情况：浏览器对同一地址只允许 6 条 HTTP/1.1 连接，每个页面会占 1 条 SSE + 1 条 WebSocket，连接未释放时新请求会一直排队。SSE 连接的建立/关闭也会写日志。
+`realtime.ws_clients` 是当前打开的 `/ws/client-monitor` 连接数，用于排查“页面卡住但接口很快”的情况：浏览器对同一地址只允许 6 条 HTTP/1.1 连接，长连接不释放时后续 REST 请求会一直排队；页面每个标签页占用 1 条 WebSocket（不占 HTTP 连接额度）。WebSocket 连接/断开、状态阈值变化都会写日志。SSE 计数已于 2026-10-13 随该通道一起移除（ADR-015）。
 
 ## 4. 日志查询接口
 
@@ -233,7 +239,65 @@ GET /api/v1/logs/categories/authentication_session?platform=Linux&page=1&size=20
 
 导出沿用分类查询的字段、排序和错误行为，但单次取数上限放宽到 10000 行（分类列表接口的 100 行上限不适用于导出）。内容在内存一次性生成，当前没有 CSV 公式注入防护。
 
-## 5. 日志采集与 SSE
+### 4.6 `GET /api/v1/logs/trend`
+
+时间桶接入趋势，为概览与日志统计页的图表供数（2026-10-13 新增，方案见 `PLAN-frontend-charts.md`）。
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `range` | string | `24h` | `1h` / `24h` / `7d` / `30d`，其他值返回 400 |
+| `bucket` | string/null | 随 range 定（1h→minute，24h→hour，7d/30d→day） | `minute` / `hour` / `day`；组合出的点数 > 2000 时返回 400（如 `range=30d&bucket=minute`） |
+| `platform` | string/null | null=全部 | 大小写不敏感的 `linux`/`windows`；其他值 400 |
+
+```json
+{
+  "code": 0, "message": "ok",
+  "data": {
+    "bucket": "hour", "range": "24h",
+    "generatedAt": "2026-10-13T06:00:00Z", "cached": true, "ageMs": 4200,
+    "points": [
+      {"bucket": "2026-10-13T05:00:00Z", "linux": 120, "windows": 300, "total": 420}
+    ]
+  }
+}
+```
+
+- **桶键一律 UTC（`...Z` 结尾）**：DB 内即 UTC naive datetime，本接口不做时区转换；本地时间由前端渲染时转换，否则趋势图/热力图会偏 8 小时。
+- 空桶补 0，`points` 按时间升序且无重复；`linux`/`windows` 在 `platform` 过滤后恒为 0。
+- **服务端 TTL 缓存**：`1h` 5 秒、`24h` 15 秒、`7d`/`30d` 60 秒；`generatedAt`/`cached`/`ageMs` 用于观测数据新鲜度。
+- 聚合按表 UNION ALL（Linux 7 表用 `event_time`，Windows 5 表用 `time_created`，两库分别查询后在 Python 合并）。
+- 查询失败返回 **500**（与 `/api/v1/logs/summary` 一致），不会降级成「全 0 趋势」。
+
+### 4.7 `GET /api/v1/logs/stats`
+
+窗口内 TOP 日志类别与 TOP 主机排行，为日志统计页的条形图供数（2026-10-13 新增）。
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `range` | string | `7d` | `24h` / `7d` / `30d`，其他值 400 |
+| `limit` | integer | `10` | 1～50，越界返回 422 |
+| `platform` | string/null | null=全部 | 同 §4.6 |
+
+```json
+{
+  "code": 0, "message": "ok",
+  "data": {
+    "range": "7d", "generatedAt": "…Z", "cached": false, "ageMs": 0,
+    "topCategories": [{"key": "authentication_session", "label": "认证会话", "platform": "Linux", "count": 8123}],
+    "topHosts": [{"host": "server-a", "count": 1502}]
+  }
+}
+```
+
+- 口径是**窗口内**计数（`event_time`/`time_created >= now - range`），与 `/logs/summary` 的全表口径不同，二者不可混用。
+- `topHosts` 只查实际拥有主机列的表：Linux 三张带 `hostname` 的表（`DATABASE.md` §4.3）+ Windows 五张 `computer` 表，NULL/空值主机被排除，两平台同名主机合并计数。
+- TTL 缓存 60 秒；查询失败返回 500。
+
+## 5. 日志采集
+
+> **实时通道统一走 WebSocket**：原先的日志 SSE 接口 `GET /api/v1/logs/stream` 已于 2026-10-13 整体移除
+> （原因见 ADR-015）。现在唯一的实时通道是 `/ws/client-monitor`，消息格式与扩展约定见 §6 与 ADR-015。
+> 采集接口不再向任何通道推送逐条事件；页面靠定时 REST 刷新获取统计与列表。
 
 ### 5.1 `POST /api/v1/logs/{platform}`
 
@@ -245,7 +309,7 @@ GET /api/v1/logs/categories/authentication_session?platform=Linux&page=1&size=20
 
 请求体是必填项：完全没有请求体时 FastAPI 会先返回 422，只有带合法 JSON 体（例如 `[]`）调用未知平台时才得到 404。
 
-请求体可以是单个 JSON 对象或对象数组；服务统一转成列表。数组元素不是 JSON 对象时不会让接口返回 500：该记录会被跳过持久化（响应仍为 `persisted:false`），其在实时事件中的 `category` 与 `eventTime` 为 `null`。
+请求体可以是单个 JSON 对象或对象数组；服务统一转成列表。数组元素不是 JSON 对象时不会让接口返回 500：该记录会被跳过持久化，响应仍为 `persisted:false` 并计入 `skipped`（`errors[].stage = "parse"`）。
 
 Linux 兼容示例：
 
@@ -315,7 +379,6 @@ Windows 旧字段兼容示例：
 - 整批写入失败时会退化为逐行重试，因此 `errors[].index` 能定位到具体记录。
 - 解析规则：Linux 支持 `normalized` 载荷、auditd 行（`type=... msg=audit(...)`，按类型映射到 7 张表）与 syslog 行；Windows 支持 Fluent Bit winlog JSON（`TimeGenerated`/`EventID`/`Channel`/`Data` 等）。时间统一转成 UTC。
 - 数据库错误摘要最多保留 300 字符；没有幂等键或重试令牌。
-- SSE 队列满时 `put()` 会等待，因而响应可能延迟。
 
 #### 原始日志存证
 
@@ -326,40 +389,6 @@ Windows 旧字段兼容示例：
 - `log_hash` 列有唯一索引：同一 `(timestamp, log)` 重复上报只留一条存证，按幂等成功计入 `hashed`。
 - 记录缺少 `log` 字段或内容为空时**跳过存证**，追加一条 `errors[].stage = "hash"`，日志本身仍正常入库。
 - 存证库写入失败时逐行定位并记入 `errors[].stage = "hash"`；**已入库的业务日志不会被回滚**。
-
-### 5.2 `GET /api/v1/logs/stream`
-
-返回 `text/event-stream`，无参数、鉴权或历史游标支持。浏览器可使用：
-
-```javascript
-const stream = new EventSource('/api/v1/logs/stream')
-stream.addEventListener('log', event => console.log(JSON.parse(event.data)))
-```
-
-事件类型：
-
-```text
-event: connected
-data: {"serverTime":"2026-10-10T08:00:00+00:00"}
-```
-
-```text
-event: log
-data: {"platform":"linux","category":"authentication_session","eventTime":"2026-10-10T08:00:00Z"}
-```
-
-```text
-event: heartbeat
-data: {"serverTime":"2026-10-10T08:00:20+00:00"}
-```
-
-- 建连立即发送 `connected`。
-- 队列有数据时发送 `log`；摘要字段取值顺序为 `normalized` 子对象优先，其次顶层同名字段，其中 `category` 回退到 `channel`/`Channel`，`eventTime` 回退到顶层 `event_time`、`TimeGenerated`、`timestamp`。
-- 20 秒无事件时发送 `heartbeat`。
-- 除业务事件外，sse-starlette 每 15 秒还会发送一个注释帧 `: ping`（运行验证中可见），仅作底层保活，浏览器 `EventSource` 不会触发事件回调。
-- 所有连接竞争同一个内存队列，并非每个订阅者都收到每条日志。
-- 重启丢失队列；无事件 ID、补发或服务端显式断线恢复逻辑。
-- 当前 Web 前端**不再订阅**该接口：每页 1 条 SSE + 1 条 WebSocket 会占满浏览器同源 6 条连接额度，前端改为 WebSocket 推送 + 定时 REST 刷新；接口保留给外部消费方，服务端仍按 `/health` 的 `realtime.sse_clients` 计数。
 
 ## 6. 心跳监控接口
 
@@ -518,6 +547,36 @@ data: {"serverTime":"2026-10-10T08:00:20+00:00"}
 ```
 
 服务端随后等待客户端文本帧，仅用于检测断开；客户端可以不发送业务消息。没有应用级 ping 消息、订阅参数或鉴权，保活依赖每 5 秒的周期快照（页面以 20 秒无消息判定假死）。每次单连接发送等待上限 10 秒，失败连接会被移除。连接集合只存在于当前进程。
+
+### 6.7 `GET /api/v1/monitor/history`
+
+心跳历史序列，为心跳页的延迟趋势等图表供数（2026-10-13 新增）。
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `minutes` | integer | `15` | 1～60，越界返回 422 |
+
+```json
+{
+  "code": 0, "message": "ok",
+  "data": {
+    "intervalSec": 5, "windowMinutes": 15, "samples": 3,
+    "points": [
+      {"t": "2026-10-13T06:01:00Z", "total": 2, "online": 1, "delayed": 0,
+       "offline": 1, "avgDelay": 19.5}
+    ],
+    "clients": [
+      {"clientId": "sim-linux-001", "status": "ONLINE",
+       "points": [["2026-10-13T06:01:00Z", 4]]}
+    ]
+  }
+}
+```
+
+- **数据源是进程内环形缓冲**（`backend/app/metrics.py`，watchdog 每 5 秒采样，容量 720 点 ≈ 1 小时），**不查库**：数据库故障时该接口依然可用。
+- **进程重启后历史清零**：返回空序列（`points: []`）而不是错误，页面据此显示空态——「刚重启没有历史」与「查询失败」必须可区分。
+- 序列时间 `t` 为 UTC（`...Z`），前端渲染时转本地时区；`avgDelay` 是该轮采样所有客户端 `heartbeatDelaySec` 的平均值（秒）。
+- `clients[].points` 只含窗口内出现过的客户端，`[时间, 延迟秒]` 成对，按时间升序。
 
 ## 7. 存证与归档接口
 

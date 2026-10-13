@@ -11,7 +11,6 @@ from fastapi import FastAPI, Request, Query, HTTPException, Body, WebSocket, Web
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sse_starlette.sse import EventSourceResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +19,7 @@ from .config import get_settings
 from .db import Base, db_health, hash_engine, linux_engine, monitor_engine, windows_engine, MonitorSessionLocal, one, rows
 from .models import ClientStatus, LogHash
 from .services import categories, query_category, summary, recent_rows
+from .metrics import heartbeat_history, logs_stats, logs_trend, record_sample
 from .parsers import normalize_linux, normalize_windows, windows_table_for
 from .hashing import build_evidence_row
 from .archive import archive_evidence, archive_root, months_ago
@@ -31,8 +31,6 @@ app = FastAPI(title=settings.app_name, version="1.0.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-event_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
-sse_clients: int = 0  # 当前打开的日志 SSE 连接数（进程内），仅用于观测
 
 
 @app.middleware("http")
@@ -180,13 +178,45 @@ async def home(request: Request):
     )
 
 
+# 侧栏「服务连接」卡片里的库名（库名给运维看，中文名给业务看）
+DB_STATUS_LABELS = (
+    ("linux_logs", "Linux 日志库"),
+    ("windows_logs", "Windows 日志库"),
+    ("log_fusion", "融合库"),
+    ("log_hash", "存证库"),
+)
+
+
 @app.get("/partials/db-status", response_class=HTMLResponse)
 def db_status_partial():
+    """侧栏「服务连接」卡片的数据库部分（HTMX 每 30 秒替换一次）。
+
+    每个库一行：状态点 + 中文名 + 真实库名 + 状态文字，首行是「N/M 个库」汇总。
+    状态只来自本次真实 `SELECT 1`：连不上就直接显示「不可用」，不保留上次结果——
+    否则运维会把「已经断了」看成「一切正常」。连接失败不返回 5xx，只改变色与文案。
+    """
     status = db_health()
-    return "".join(
-        f'<span class="badge rounded-pill text-bg-{"success" if connected else "danger"}">{name}: {"已连接" if connected else "不可用"}</span> '
-        for name, connected in status.items()
-    )
+    total = len(DB_STATUS_LABELS)
+    ok = sum(1 for name, _label in DB_STATUS_LABELS if status.get(name))
+    group_tone = "ok" if ok == total else ("warn" if ok else "bad")
+    group_text = "正常" if ok == total else ("部分可用" if ok else "全部不可用")
+    parts = [
+        f'<div class="conn-row"><span class="conn-dot {group_tone}"></span>'
+        f'<span class="conn-name">数据库</span><span class="conn-meta">{ok}/{total} 个库</span>'
+        f'<span class="conn-state {group_tone}">{group_text}</span></div>'
+    ]
+    for name, label in DB_STATUS_LABELS:
+        connected = bool(status.get(name))
+        tone = "ok" if connected else "bad"
+        # 真实库名放进 title（悬停可见）：侧栏只有 col-lg-2 宽，把 linux_logs 这类
+        # 12 个字符的等宽文本塞进每一行会把中文标签挤成省略号。
+        parts.append(
+            f'<div class="conn-row conn-sub" title="{label}（{name}）">'
+            f'<span class="conn-dot {tone}"></span>'
+            f'<span class="conn-name">{label}</span>'
+            f'<span class="conn-state {tone}">{"已连接" if connected else "不可用"}</span></div>'
+        )
+    return "".join(parts)
 
 
 @app.get("/health")
@@ -194,10 +224,9 @@ def health():
     return {
         "status": "ok",
         "databases": db_health(),
-        # 实时通道的连接数：浏览器对同一地址只允许 6 条 HTTP/1.1 连接，
-        # 每个页面会占 1 条 SSE + 1 条 WebSocket，这里用于排查连接被占满。
+        # 实时通道（仅 WebSocket）的连接数：浏览器对同一地址只允许 6 条 HTTP/1.1 连接，
+        # 长连接不释放会让后续 REST 请求排队，这里用于排查连接被占满。
         "realtime": {
-            "sse_clients": sse_clients,
             "ws_clients": ws_manager.connection_count,
         },
     }
@@ -226,25 +255,27 @@ def recent_logs(limit: int = Query(20, ge=1, le=100)):
     return {"code": 0, "message": "ok", "data": recent_rows(limit)}
 
 
-@app.get("/api/v1/logs/stream")
-async def log_stream():
-    async def generator():
-        global sse_clients
-        # 计数用于 /health 观测：连接未被及时释放会让浏览器 6 条连接额度被占满。
-        sse_clients += 1
-        logger.info("SSE 连接建立，当前 sse_clients=%d", sse_clients)
-        try:
-            yield {"event": "connected", "data": json.dumps({"serverTime": datetime.now(timezone.utc).isoformat()})}
-            while True:
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=20)
-                    yield {"event": "log", "data": json.dumps(event, default=str, ensure_ascii=False)}
-                except asyncio.TimeoutError:
-                    yield {"event": "heartbeat", "data": json.dumps({"serverTime": datetime.now(timezone.utc).isoformat()})}
-        finally:
-            sse_clients -= 1
-            logger.info("SSE 连接关闭，当前 sse_clients=%d", sse_clients)
-    return EventSourceResponse(generator())
+@app.get("/api/v1/logs/trend")
+def log_trend(range_: str = Query("24h", alias="range"), bucket: str | None = None, platform: str | None = None):
+    """时间桶接入趋势（图表专用）。
+
+    桶键一律是 UTC（`...Z`）——DB 内即 UTC naive datetime，本接口不做时区转换，
+    本地时间由前端渲染时转换，否则趋势图会偏 8 小时。服务端带 TTL 缓存
+    （响应里的 `cached`/`ageMs`/`generatedAt` 可观测数据新鲜度）。
+    """
+    try:
+        return {"code": 0, "message": "ok", "data": logs_trend(range_, bucket, platform)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/v1/logs/stats")
+def log_stats(range_: str = Query("7d", alias="range"), limit: int = Query(10, ge=1, le=50), platform: str | None = None):
+    """窗口内 TOP 日志类别 / TOP 主机（排行图专用，服务端 TTL 缓存 60 秒）。"""
+    try:
+        return {"code": 0, "message": "ok", "data": logs_stats(range_, limit, platform)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/v1/monitor/summary")
@@ -283,6 +314,19 @@ def monitor_client_logs(client_id: str, limit: int = Query(20, ge=1, le=100)):
     # Existing legacy tables do not consistently carry client_id; return the
     # common recent view and let future migrations add exact source filtering.
     return {"code": 0, "message": "ok", "data": {"clientId": client_id, "items": recent_rows(limit)}}
+
+
+@app.get("/api/v1/monitor/history")
+def monitor_history(minutes: int = Query(15, ge=1, le=60)):
+    """心跳历史序列：进程内环形缓冲（watchdog 每 5 秒采样），不查库。
+
+    进程重启后历史清零，返回空序列而不是错误——页面用空态区分
+    「刚重启还没有历史」和「查询失败」。
+    """
+    try:
+        return {"code": 0, "message": "ok", "data": heartbeat_history(minutes)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def persist_heartbeats(payload: list[dict[str, Any]]) -> dict:
@@ -365,6 +409,8 @@ async def _status_watchdog(interval: float = 5.0) -> None:
                     return build_snapshot(db)
 
             snapshot = await asyncio.to_thread(_refresh)
+            # 采样进心跳历史环形缓冲（/api/v1/monitor/history 的数据源，不查库）
+            record_sample(snapshot)
             await ws_manager.broadcast(snapshot)
         except Exception:
             logger.exception("心跳状态巡检失败")
@@ -400,25 +446,6 @@ def _persist_rows(engine, entries: list[tuple[int, str, dict]]) -> tuple[int, li
                 "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
             })
     return inserted, errors
-
-
-def _summary_from_row(platform: str, table: str, row: dict) -> dict:
-    event_time = row.get("event_time") or row.get("time_created")
-    return {
-        "platform": platform,
-        "category": row.get("category") or row.get("channel") or table,
-        "eventTime": event_time.isoformat() if isinstance(event_time, datetime) else event_time,
-    }
-
-
-def _summary_from_raw(platform: str, record) -> dict:
-    if not isinstance(record, dict):
-        return {"platform": platform, "category": None, "eventTime": None}
-    return {
-        "platform": platform,
-        "category": record.get("category") or record.get("channel") or record.get("Channel"),
-        "eventTime": record.get("event_time") or record.get("TimeGenerated") or record.get("timestamp"),
-    }
 
 
 def _is_duplicate_key(exc: Exception) -> bool:
@@ -502,17 +529,14 @@ def persist_logs(platform: str, records: list) -> dict:
     engine = windows_engine if platform == "windows" else linux_engine
     prepared: list[tuple[int, str, dict]] = []
     parse_errors: list[dict] = []
-    summaries: list[dict] = []
     event_times: dict[int, Any] = {}
     for index, record in enumerate(records):
         row, error = normalize(record)
         if row is None:
             parse_errors.append({"index": index, "stage": "parse", "reason": error})
-            summaries.append(_summary_from_raw(platform, record))
             continue
         table = row["category"] if platform == "linux" else windows_table_for(row.get("channel"))
         prepared.append((index, table, row))
-        summaries.append(_summary_from_row(platform, table, row))
         event_times[index] = row.get("event_time") or row.get("time_created")
     inserted, insert_errors = _persist_rows(engine, prepared)
     # 存证独立于业务入库：先算哈希存证，再返回结果；存证失败不回滚已入库的日志。
@@ -523,7 +547,6 @@ def persist_logs(platform: str, records: list) -> dict:
         "failed": len(insert_errors),
         "hashed": hashed,
         "errors": sorted(parse_errors + insert_errors + hash_errors, key=lambda item: item["index"]),
-        "summaries": summaries,
     }
 
 
@@ -547,17 +570,13 @@ async def ingest_logs(platform: str, payload: Any = Body(...)):
         logger.exception("日志处理失败（%s）", platform)
 
     if result is None:
-        # 整体失败（连接超时/数据库不可用）：仍推送实时事件，保证页面能看到采集活动
-        for record in records:
-            await event_queue.put(_summary_from_raw(platform, record))
+        # 整体失败（连接超时/数据库不可用）：如实返回失败结果。
         return JSONResponse(status_code=200, content={
             "accepted": len(records), "persisted": False, "inserted": 0, "skipped": 0,
             "failed": len(records), "hashed": 0,
             "errors": [{"stage": "persist", "reason": (fatal or "")[:300]}],
         })
 
-    for summary in result["summaries"]:
-        await event_queue.put(summary)
     return JSONResponse(status_code=200, content={
         "accepted": len(records),
         "persisted": result["failed"] == 0 and result["skipped"] == 0,

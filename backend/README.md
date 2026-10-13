@@ -17,7 +17,7 @@ python run.py        # 固定 0.0.0.0:8080，开启 reload
 - 接口文档 `http://127.0.0.1:8080/docs`
 - 健康检查 `http://127.0.0.1:8080/health`
 
-页面为 FastAPI + Jinja2 服务端渲染，HTMX 局部刷新、Alpine.js 管状态、Bootstrap 5 组件、ECharts 图表、SSE 日志事件、WebSocket 心跳快照；前端库自托管在 `frontend/vendor/`（ADR-011，**不再走 CDN**），无前端构建步骤。
+页面为 FastAPI + Jinja2 服务端渲染，HTMX 局部刷新、Alpine.js 管状态、Bootstrap 5 组件、ECharts 图表、WebSocket 心跳快照（唯一实时通道，SSE 已于 2026-10-13 移除）；前端库自托管在 `frontend/vendor/`（ADR-011，**不再走 CDN**），无前端构建步骤。
 
 ## 数据库
 
@@ -25,7 +25,7 @@ python run.py        # 固定 0.0.0.0:8080，开启 reload
 
 ## 主要能力
 
-日志类别与统计、Linux/Windows 分类查询（30 条/页）、关键词检索、CSV 导出、SSE 实时日志流、日志采集接口（`app/parsers.py` 解析 auditd/syslog/winlog 后入库，失败按 `parse`/`insert` 阶段上报）、原始日志 SHA-256 存证（`app/hashing.py` → `log_hash` 库）与归档（`app/archive.py`：导出 CSV、校验落盘后才删除，台账写 `log_fusion.archive_log`）、`log_fusion.client_status` 心跳持久化与 WebSocket 广播。
+日志类别与统计、Linux/Windows 分类查询（30 条/页）、关键词检索、CSV 导出、日志采集接口（`app/parsers.py` 解析 auditd/syslog/winlog 后入库，失败按 `parse`/`insert`/`hash` 阶段上报）、原始日志 SHA-256 存证（`app/hashing.py` → `log_hash` 库）与归档（`app/archive.py`：导出 CSV、校验落盘后才删除，台账写 `log_fusion.archive_log`）、`log_fusion.client_status` 心跳持久化与 WebSocket 广播。
 
 ## 模拟 Fluent Bit 客户端
 
@@ -38,4 +38,4 @@ $env:PYTHONPATH = (Get-Location).Path
 python .\simulator\send_simulated_clients.py --url http://127.0.0.1:8080 --count 3
 ```
 
-模拟器自身默认 URL 是 `http://127.0.0.1:8000`，直接运行时需显式传 `--url`。
+模拟器默认 URL 是 `http://127.0.0.1:8080`（与 `启动服务.ps1` 的默认端口一致，2026-10-13 由 8000 改齐），直接运行无需再传 `--url`。

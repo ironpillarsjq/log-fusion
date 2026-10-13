@@ -72,7 +72,7 @@ def send_heartbeat(client: httpx.Client, url: str, clients: list[str], interval:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://127.0.0.1:8000")
+    parser.add_argument("--url", default="http://127.0.0.1:8080")
     parser.add_argument("--data-dir", type=Path, default=Path(r"C:\Users\ironp\Desktop\data"))
     parser.add_argument("--interval", type=float, default=3.0, help="日志和心跳发送间隔（秒）")
     parser.add_argument("--count", type=int, default=0, help="发送轮数；0 表示持续运行")
