@@ -553,13 +553,19 @@ def normalize_windows(record: Any) -> tuple[dict[str, Any] | None, str | None]:
 
     timestamp = parse_datetime(
         record.get("TimeGenerated") or record.get("TimeWritten")
-        or record.get("event_time") or record.get("date")
+        or record.get("event_time") or record.get("timestamp")
+        or record.get("date")
     )
     if timestamp is None:
-        return None, "缺少可解析的时间戳（TimeGenerated / TimeWritten / date）"
+        return None, "缺少可解析的时间戳（TimeGenerated / TimeWritten / event_time / timestamp / date）"
 
     client_id = text(record.get("client_id")) or "unknown"
-    data = record.get("Data", record.get("StringInserts"))
+    # winlog 输出经常同时带有 `Data: ""` 和非空 `StringInserts`。
+    # 不能只用 dict.get(..., fallback)，因为空字符串仍会屏蔽 fallback，
+    # 最终导致事件参数在 eventdata 中丢失。
+    data = record.get("Data")
+    if data in (None, "", []):
+        data = record.get("StringInserts")
     eventdata: dict[str, Any] = {}
     if data not in (None, "", []):
         eventdata["Data"] = data

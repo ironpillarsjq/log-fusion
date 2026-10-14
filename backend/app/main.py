@@ -11,6 +11,9 @@ from fastapi import FastAPI, Request, Query, HTTPException, Body, WebSocket, Web
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler, http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
@@ -26,11 +29,57 @@ from .archive import archive_evidence, archive_root, months_ago
 from .ws import ws_manager
 
 logger = logging.getLogger("log_fusion")
+
+# Fluent Bit 1.8 的 HTTP 客户端响应缓冲区默认为 4 KiB。采集端一次
+# flush 可能包含很多条失败记录，若逐条把 300 字符的 reason 返回，响应
+# 会膨胀到几十 KiB，导致 Fluent Bit 连 HTTP 状态码都读不完并反复重试。
+_INGEST_ERROR_SAMPLE_LIMIT = 8
+_INGEST_ERROR_REASON_LIMIT = 160
+
+
+def _compact_ingest_errors(errors: list[dict]) -> tuple[list[dict], int, bool]:
+    """限制采集接口响应大小，保留少量样例并返回完整错误总数。"""
+    total = len(errors)
+    if total == 0:
+        return [], 0, False
+    sample = []
+    for error in errors[:_INGEST_ERROR_SAMPLE_LIMIT]:
+        item = dict(error)
+        if "reason" in item and item["reason"] is not None:
+            item["reason"] = str(item["reason"])[:_INGEST_ERROR_REASON_LIMIT]
+        sample.append(item)
+    return sample, total, total > len(sample)
+
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.0.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+
+
+def _log_rejected_ingest(request: Request, status: int, reason: Any) -> None:
+    if request.method == "POST" and request.url.path.startswith("/api/v1/logs/"):
+        logger.error(
+            "日志接收失败 path=%s client=%s status=%s reason=%s content_type=%s content_length=%s",
+            request.url.path, request.client.host if request.client else "unknown",
+            status, json.dumps(reason, ensure_ascii=False, default=str),
+            request.headers.get("content-type"), request.headers.get("content-length"),
+        )
+
+
+@app.exception_handler(RequestValidationError)
+async def _ingest_validation_error(request: Request, exc: RequestValidationError):
+    # 仅打印错误位置和原因，避免将完整请求原文输出到控制台。
+    reasons = [{"loc": error.get("loc"), "type": error.get("type"), "msg": error.get("msg")}
+               for error in exc.errors()]
+    _log_rejected_ingest(request, 422, reasons)
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _ingest_http_error(request: Request, exc: StarletteHTTPException):
+    _log_rejected_ingest(request, exc.status_code, exc.detail)
+    return await http_exception_handler(request, exc)
 
 
 @app.middleware("http")
@@ -541,12 +590,28 @@ def persist_logs(platform: str, records: list) -> dict:
     inserted, insert_errors = _persist_rows(engine, prepared)
     # 存证独立于业务入库：先算哈希存证，再返回结果；存证失败不回滚已入库的日志。
     hashed, hash_errors = _persist_evidence(platform, records, event_times)
+    all_errors = sorted(parse_errors + insert_errors + hash_errors,
+                        key=lambda item: item.get("index", -1))
+    if all_errors:
+        logger.error(
+            "日志处理异常 platform=%s accepted=%d inserted=%d skipped=%d failed=%d hashed=%d errors=%d",
+            platform, len(records), inserted, len(parse_errors), len(insert_errors), hashed, len(all_errors),
+        )
+        for error in all_errors:
+            index = error.get("index")
+            record = records[index] if isinstance(index, int) and 0 <= index < len(records) else None
+            logger.error(
+                "日志记录处理失败 platform=%s index=%s client_id=%s stage=%s table=%s reason=%s",
+                platform, index, record.get("client_id") if isinstance(record, dict) else None,
+                error.get("stage"), error.get("table"),
+                json.dumps(error.get("reason"), ensure_ascii=False, default=str),
+            )
     return {
         "inserted": inserted,
         "skipped": len(parse_errors),
         "failed": len(insert_errors),
         "hashed": hashed,
-        "errors": sorted(parse_errors + insert_errors + hash_errors, key=lambda item: item["index"]),
+        "errors": all_errors,
     }
 
 
@@ -577,15 +642,20 @@ async def ingest_logs(platform: str, payload: Any = Body(...)):
             "errors": [{"stage": "persist", "reason": (fatal or "")[:300]}],
         })
 
-    return JSONResponse(status_code=200, content={
+    errors, error_count, errors_truncated = _compact_ingest_errors(result["errors"])
+    response = {
         "accepted": len(records),
         "persisted": result["failed"] == 0 and result["skipped"] == 0,
         "inserted": result["inserted"],
         "skipped": result["skipped"],
         "failed": result["failed"],
         "hashed": result["hashed"],
-        "errors": result["errors"],
-    })
+        "errors": errors,
+    }
+    if error_count:
+        response["error_count"] = error_count
+        response["errors_truncated"] = errors_truncated
+    return JSONResponse(status_code=200, content=response)
 
 
 @app.get("/api/v1/logs/export")

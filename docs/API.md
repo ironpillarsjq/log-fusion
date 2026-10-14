@@ -301,6 +301,8 @@ GET /api/v1/logs/categories/authentication_session?platform=Linux&page=1&size=20
 
 ### 5.1 `POST /api/v1/logs/{platform}`
 
+控制台诊断：解析、入库和存证错误会逐条写入 `log_fusion` 的 ERROR 日志，包含 `platform`、`index`、`client_id`、`stage`、`table` 与原因，并打印批次失败计数。请求体校验/解码等接收失败也打印路径、来源地址、HTTP 状态码及错误原因（不输出完整请求体）。HTTP 响应中的错误样例被截断时，控制台仍保留全部处理错误。
+
 路径参数 `platform` 只接受大小写不敏感的 `linux` 或 `windows`；其他值返回 HTTP 404：
 
 ```json
@@ -374,6 +376,9 @@ Windows 旧字段兼容示例：
 - `inserted`：真正写入数据库的行数。
 - `skipped`：解析阶段被拒绝的记录数（`errors[].stage = "parse"`）。
 - `failed`：入库阶段失败的记录数（`errors[].stage = "insert"`，`reason` 为数据库错误摘要）。
+- `errors`：错误样例。为兼容 Fluent Bit 1.8 的 4 KiB HTTP 响应缓冲区，接口最多返回 8 条样例，单条 `reason` 最多 160 个字符。
+- `error_count`：本批次完整错误总数；仅在存在错误时返回。
+- `errors_truncated`：错误样例是否被截断；为 `true` 时，完整错误明细只写入服务端日志。
 - `hashed`：成功写入 `log_hash.log_hash` 存证表的条数（含唯一键命中的幂等重复上报）。
 - `persisted`：仅当 `skipped == 0` 且 `failed == 0` 时为 `true`。**存证失败或跳过不影响该字段**。
 - 整批写入失败时会退化为逐行重试，因此 `errors[].index` 能定位到具体记录。

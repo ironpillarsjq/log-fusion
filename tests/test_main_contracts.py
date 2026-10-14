@@ -229,10 +229,54 @@ def test_ingest_non_object_records_are_reported_not_raised(client, written, payl
     assert written == []
 
 
+def test_ingest_error_response_is_compact_for_large_batches(client, written):
+    response = client.post("/api/v1/logs/windows", json=[{"Channel": "System"}] * 200)
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["error_count"] == 200
+    assert payload["errors_truncated"] is True
+    assert len(payload["errors"]) == 8
+    assert len(response.content) < 4096
+
+
 def test_ingest_accepts_single_object_body(client, written):
     response = client.post("/api/v1/logs/linux", json={"timestamp": "2026-10-10T08:00:00Z", "log": "x"})
     assert response.json()["inserted"] == 1
     assert len(written) == 1
+
+
+def test_ingest_logs_parse_errors_to_console(client, written, caplog):
+    response = client.post("/api/v1/logs/windows", json=[{"client_id": "win-test"}])
+    assert response.json()["skipped"] == 1
+    assert "platform=windows index=0 client_id=win-test stage=parse" in caplog.text
+    assert "时间戳" in caplog.text
+
+
+def test_ingest_logs_invalid_json_without_echoing_body(client, caplog):
+    response = client.post("/api/v1/logs/windows", content='{"private-log":',
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert "日志接收失败" in caplog.text
+    assert "json_invalid" in caplog.text
+    assert "private-log" not in caplog.text
+
+
+def test_ingest_logs_body_decoding_failure(client, caplog):
+    response = client.post("/api/v1/logs/windows", content=b'\xff',
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+    assert "There was an error parsing the body" in caplog.text
+
+
+def test_ingest_logs_insert_and_hash_errors(monkeypatch, caplog):
+    monkeypatch.setattr(main, "_persist_rows", lambda engine, entries:
+                        (0, [{"index": 0, "stage": "insert", "table": "system_logs", "reason": "insert failed"}]))
+    monkeypatch.setattr(main, "_persist_evidence", lambda *args:
+                        (0, [{"stage": "hash", "reason": "hash failed"}]))
+    result = main.persist_logs("windows", [{"date": 1791947047, "Channel": "System"}])
+    assert result["failed"] == 1
+    assert "stage=insert table=system_logs" in caplog.text
+    assert "hash failed" in caplog.text
 
 
 # --- 心跳接口 -----------------------------------------------------------------

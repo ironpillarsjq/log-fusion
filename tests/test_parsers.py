@@ -215,6 +215,16 @@ def test_normalize_windows_epoch_and_minimal_payload():
     assert json.loads(row["system_extra"]) == {}
 
 
+def test_normalize_windows_uses_string_inserts_when_data_is_empty():
+    row, error = normalize_windows({
+        "client_id": "win-1", "date": 1791947047.0, "Channel": "System",
+        "EventID": 7040, "RecordNumber": 109988, "Data": "",
+        "StringInserts": ["IsolationSession"],
+    })
+    assert error is None
+    assert json.loads(row["eventdata"])["Data"] == ["IsolationSession"]
+
+
 def test_normalize_windows_requires_time():
     row, error = normalize_windows({"Channel": "Security", "EventID": 1})
     assert row is None and "时间戳" in error

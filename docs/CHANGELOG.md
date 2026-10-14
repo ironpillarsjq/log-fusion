@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### Changed — 2026-10-14（采集错误控制台诊断）
+
+- 日志采集解析、业务入库、存证失败时，在 `log_fusion` ERROR 日志中打印批次计数与每条错误的平台、索引、客户端、阶段、表名和原因；HTTP 响应截断不影响控制台诊断。
+- 采集请求体校验失败（422）、请求体解码失败（400）等接收异常记录路径、来源地址、状态码与错误原因，不打印完整请求原文；原有 HTTP 状态码与响应契约保持不变。
+- 修正无记录索引的存证批次错误在排序时引发 `KeyError` 的问题。
+
+### Fixed — Windows Fluent Bit 事件字段归一化
+
+- 兼容 Windows Fluent Bit 同时发送 `Data: ""` 与非空 `StringInserts` 的记录：解析时回退使用 `StringInserts`，避免事件参数丢失。
+- Windows 时间字段继续支持 `TimeGenerated`、`TimeWritten`、`event_time`、`timestamp` 和 epoch `date`。
+
 ### Changed — 2026-10-13（存证中心 P0：功能分区 + 平台/时间筛选）
 
 按「企业项目要有合理功能规划」的要求，把存证页从「一个长面板」改成按职责分区的存证中心，
