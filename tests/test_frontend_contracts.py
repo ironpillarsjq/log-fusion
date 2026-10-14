@@ -247,6 +247,52 @@ def test_log_stats_page_has_filters(dashboard_html):
         assert option in dashboard_html, f"统计页缺少时间范围 {option}"
 
 
+# --- 存证中心（P0：功能分区 + 时间/平台筛选）-----------------------------------
+
+def test_evidence_center_is_split_into_tabs(dashboard_html, app_js):
+    """存证页从「一个长面板」改为按职责分区的存证中心。
+
+    归档（会删除数据）不能和日常查询混在同一个面板里，否则误触成本太高；
+    算法与策略也需要独立位置，避免把安全边界藏在表格下方的小字里。
+    """
+    assert "evidenceTabs()" in dashboard_html and "evidenceTabs()" in app_js
+    for tab in ("overview", "ledger", "archive", "policy"):
+        assert f"evidenceTab==='{tab}'" in dashboard_html, f"存证中心缺少分区 {tab}"
+    for label in ("存证总览", "存证台账", "归档管理", "算法与策略"):
+        assert label in app_js, f"存证中心缺少分区名称 {label}"
+
+
+def test_evidence_center_has_platform_and_date_filters(dashboard_html, app_js):
+    """平台 + 入库时间范围是审计排查的基本维度，缺一不可。
+
+    注意平台取值是小写 `linux`/`windows`，与后端 `platform = :platform` 的
+    存储口径一致；写成大写会在 MySQL 默认排序规则下碰巧命中，但依赖隐式行为。
+    """
+    assert 'x-model="evidencePlatform"' in dashboard_html
+    assert 'x-model="evidenceStart"' in dashboard_html
+    assert 'x-model="evidenceEnd"' in dashboard_html
+    assert 'value="linux"' in dashboard_html and 'value="windows"' in dashboard_html
+    for param in ("platform", "start", "end"):
+        assert f"q.set('{param}'" in app_js, f"app.js 未把 {param} 传给列表接口"
+
+
+def test_evidence_export_uses_current_filters(dashboard_html, app_js):
+    """导出必须复用当前筛选条件，否则会导出与页面所见不一致的数据。"""
+    assert "exportEvidence()" in dashboard_html
+    assert "evidenceExportUrl()" in app_js
+    # 导出参数与列表参数必须来自同一组状态，不能再有写死的导出链接
+    assert 'href="/api/v1/evidence/export"' not in dashboard_html
+    for param in ("verify", "keyword", "platform", "start", "end"):
+        assert f"q.set('{param}'" in app_js
+
+
+def test_evidence_filters_can_be_reset(dashboard_html, app_js):
+    """筛选器需要重置入口，否则多个条件叠加后用户只能逐项手工清空。"""
+    assert "resetEvidenceFilters()" in dashboard_html
+    assert "resetEvidenceFilters()" in app_js
+    assert "evidenceStart=''" in app_js and "evidenceEnd=''" in app_js
+
+
 def test_chart_self_check_tools_are_documented():
     """两个不依赖浏览器的图表自检工具必须留在仓库里，并在文档里可被发现。"""
     for tool in ("chart-layout-check.cjs", "chart-render-check.cjs"):

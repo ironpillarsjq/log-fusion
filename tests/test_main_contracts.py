@@ -518,3 +518,140 @@ def test_persist_evidence_distinguishes_duplicate_from_real_failure(
     if expect_failed:
         assert errors[0]["stage"] == "hash"
         assert "完整性约束失败" in errors[0]["reason"]
+
+
+# --- 存证校验规则必须与写入规则一致 -------------------------------------------
+
+def test_verify_sql_uses_same_separator_as_writer():
+    """校验用的分隔符必须等于写入端的 `HASH_FIELD_SEPARATOR`。
+
+    分隔符是哈希定义的一部分：任一端改了，所有存证都会被判成篡改（或反之，
+    真正的篡改被判成正常）。这里用 `CHAR(31)` 表达 US 字符。
+    """
+    from app import hashing
+
+    assert ord(hashing.HASH_FIELD_SEPARATOR) == 31
+    assert "CHAR(31)" in main.EVIDENCE_VERIFY_SQL
+
+
+def test_verify_sql_treats_null_timestamp_as_empty_string():
+    """NULL 时间戳必须按空串复算，否则会对合法存证误报。
+
+    写入端 `raw_text(None) == ""`，所以 SQL 侧要用 `IFNULL(log_timestamp,'')`。
+    曾经写成「NULL 时间戳 => PENDING 待校验」，结果把一条由本系统正常写入的
+    「无时间戳」存证报成了异常——校验规则与写入规则不一致会制造假警报。
+    """
+    assert "IFNULL(log_timestamp" in main.EVIDENCE_VERIFY_SQL
+    assert "log_timestamp IS NULL THEN" not in main.EVIDENCE_VERIFY_SQL
+
+
+def test_verify_sql_handles_null_hash_safely():
+    """摘要为 NULL 时要判为不一致，不能用 `=`（NULL 比较结果是 NULL，会被漏掉）。"""
+    assert "<=>" in main.EVIDENCE_VERIFY_SQL
+
+
+def test_evidence_statuses_are_all_reachable():
+    """状态集合里不应保留不可达的分类。
+
+    `PENDING` 已随「NULL 时间戳按空串处理」一并移除：若保留，它会永远是 0，
+    或者更糟——把合法行算进去，成为假警报来源。
+    """
+    assert main.EVIDENCE_STATUSES == ("VALID", "HASH_MISMATCH", "RAW_MISSING")
+    assert "PENDING" not in main.EVIDENCE_VERIFY_SQL
+
+
+@pytest.mark.parametrize("value", ["HASH_MISMATCH", "RAW_MISSING", "VALID"])
+def test_valid_verify_filter_reaches_database(client, value):
+    """合法筛选值应通过参数校验（本环境无库，因此停在 503 而不是 400）。"""
+    assert client.get(f"/api/v1/evidence?verify={value}").status_code == 503
+
+
+def test_invalid_verify_filter_returns_400(client):
+    """非法筛选值要明确拒绝，而不是拼进 SQL 或静默忽略。"""
+    response = client.get("/api/v1/evidence?verify=NOT_A_STATUS")
+    assert response.status_code == 400
+    assert "verify" in response.json()["detail"]
+
+
+def test_evidence_summary_exposes_data_source(client, monkeypatch):
+    """响应要带实际读取的库表，避免「页面看的不是同一个库」这类误判。"""
+    from app import config
+
+    monkeypatch.setattr(main, "rows", lambda *a, **k: [
+        {"verify_status": "VALID", "n": 7},
+        {"verify_status": "HASH_MISMATCH", "n": 2},
+    ])
+    payload = client.get("/api/v1/evidence/summary").json()["data"]
+
+    settings = config.get_settings()
+    assert payload["source"] == {
+        "host": settings.db_host,
+        "database": settings.log_hash_db,
+        "table": settings.log_hash_table,
+    }
+    assert payload["total"] == 9
+    assert payload["statuses"] == {"VALID": 7, "HASH_MISMATCH": 2, "RAW_MISSING": 0}
+    assert payload["healthy"] is False
+
+
+def test_evidence_summary_reports_healthy_when_no_anomalies(client, monkeypatch):
+    monkeypatch.setattr(main, "rows", lambda *a, **k: [{"verify_status": "VALID", "n": 5}])
+    payload = client.get("/api/v1/evidence/summary").json()["data"]
+
+    assert payload["total"] == 5
+    assert payload["statuses"]["HASH_MISMATCH"] == 0
+    assert payload["healthy"] is True
+
+
+# --- 存证筛选：平台与入库时间范围（P0 页面改造新增）----------------------------
+
+def test_evidence_where_platform_filter():
+    where, params = main._evidence_where("linux", None)
+    assert "platform = :platform" in where
+    assert params["platform"] == "linux"
+
+
+def test_evidence_where_date_range_uses_created_at():
+    """时间范围按入库时间过滤：补传的历史日志 event_time 很早，不能用 event_time 口径。"""
+    where, params = main._evidence_where(None, None, "2026-10-01", "2026-10-13")
+    assert "created_at >= :start_at" in where
+    assert "created_at <= :end_at" in where
+    # 结束日期必须覆盖当天 23:59:59，否则「结束日期=今天」会漏掉今天已入库的记录
+    assert params["end_at"].strftime("%H:%M:%S") == "23:59:59"
+    assert params["start_at"].strftime("%H:%M:%S") == "00:00:00"
+
+
+def test_evidence_where_combines_filters():
+    where, params = main._evidence_where("windows", "abc", "2026-10-01", None)
+    assert where.count(" AND ") == 2
+    assert params["platform"] == "windows"
+    assert params["keyword"] == "%abc%"
+    assert "end_at" not in params
+
+
+def test_evidence_where_without_filters_is_empty():
+    where, params = main._evidence_where(None, None)
+    assert where == ""
+    assert params == {}
+
+
+def test_evidence_list_accepts_date_and_platform_params(client):
+    """新筛选参数必须通过 FastAPI 参数校验（无库环境应停在 503 而不是 422/400）。"""
+    response = client.get(
+        "/api/v1/evidence?platform=linux&start=2026-10-01&end=2026-10-13"
+    )
+    assert response.status_code == 503
+
+
+def test_evidence_export_accepts_date_and_platform_params(client):
+    response = client.get(
+        "/api/v1/evidence/export?platform=windows&start=2026-10-01&end=2026-10-13"
+    )
+    assert response.status_code == 503
+
+
+def test_evidence_bad_date_returns_400(client):
+    """日期格式错误要明确拒绝，不能静默忽略导致筛选条件失效。"""
+    response = client.get("/api/v1/evidence?start=2026/10/01")
+    assert response.status_code == 400
+    assert "YYYY-MM-DD" in response.json()["detail"]

@@ -87,7 +87,10 @@ flowchart LR
 - 概览页除 2 秒汇总外，每 10 秒请求 `/api/v1/logs/trend?range=1h&bucket=minute` 画最近 60 分钟接入趋势。
 - 日志统计子页（`#/log-stats`）每 30 秒并发请求三份数据：`/api/v1/logs/trend`（跟随筛选器的时间范围与桶）、`/api/v1/logs/trend?range=7d&bucket=hour`（热力图数据源）、`/api/v1/logs/stats`（TOP 排行）。
 - 日志页按平台和类别请求 `/api/v1/logs/categories/{category}`。
-- 存证页请求存证摘要和列表；存证库不可用时后端返回 **503**（2026-10-12 之前是降级为空数据，会把「库连不上」伪装成「没有存证」）。
+- 存证页（`#/evidence`）是分成四个功能区的「存证中心」（`evidenceTab` = `overview`/`ledger`/`archive`/`policy`）：
+  总览区展示四项指标与告警条；台账区请求存证摘要和列表，支持校验状态、平台、入库时间范围与关键词筛选；
+  归档区承载会删除数据的导出/删除操作；策略区说明哈希输入定义与当前安全边界（SHA-256 不能防伪造）。
+  存证库不可用时后端返回 **503**（2026-10-12 之前是降级为空数据，会把「库连不上」伪装成「没有存证」）。
 - 心跳页已接入 WebSocket：`app.js` 连接 `/ws/client-monitor`，用 `wsStatus` 显示“实时连接/连接中/已断开，重连中”，收到快照后直接更新指标、列表**与状态分布图**（延迟趋势图走 10 秒一次的 `/api/v1/monitor/history` 轮询；在线率仪表与「客户端延迟排行」已于 2026-10-13 按需求移除——在线率本身仍在「在线客户端」指标卡的 hint 里，排行信息仍在下方客户端列表的「延迟」列），WebSocket 未连接时回退到每 5 秒轮询 REST（走同一条 `applyCounts` 路径，图表照常更新）；断开后按指数退避重连（上限 30 秒），超过 20 秒未收到任何消息则主动关闭以触发重连。
 - 图表实例由 `app.js` 的注册表统一管理（`getChart(id)` 复用实例、`pagehide` 时 `disposeCharts()` 全部释放）；容器被 `x-show` 隐藏时宽高为 0，`getChart` 直接返回 `null` 跳过绘制，切回该页再由 `onPageEnter()` 补画。
 - **所有图表只能通过 `paint(id, option)` 绘制**（`app.js` 里 `setOption` 只允许出现这一次）。原因是实时推送很密（WS 每 5 秒、概览汇总每 2 秒），

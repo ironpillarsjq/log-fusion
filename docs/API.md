@@ -586,7 +586,8 @@ Windows 旧字段兼容示例：
 
 ### 7.1 `GET /api/v1/evidence/summary`
 
-无参数。直接对存证表做 `COUNT(*)`：
+无参数。**逐条复算校验**：对每行按 `sha256(IFNULL(log_timestamp,'') + 0x1F + raw_log)`
+重新计算并与 `log_hash` 比较，一次全表扫描给出四类计数。
 
 ```json
 {
@@ -594,16 +595,29 @@ Windows 旧字段兼容示例：
   "message": "ok",
   "data": {
     "total": 128,
-    "statuses": { "VALID": 128, "HASH_MISMATCH": 0, "RAW_MISSING": 0, "PENDING": 0 }
+    "statuses": { "VALID": 125, "HASH_MISMATCH": 2, "RAW_MISSING": 1 },
+    "healthy": false,
+    "source": { "host": "192.168.5.6", "database": "log_hash", "table": "log_hash" }
   }
 }
 ```
 
-- `total` 是存证表当前的真实行数（旧实现只统计「最近 1000 条」，不是全表总数）。
-- `VALID` 等于 `total`：存证是入库前计算并校验写入的，不存在待校验状态；
-  篡改检测需要按 §3.2 的 SQL 复算，接口暂不提供逐条校验。
+- `total` 是存证表当前真实行数，等于三个状态之和。
+- `statuses`：
+  - `VALID` —— 复算结果与存证摘要一致；
+  - `HASH_MISMATCH` —— **不一致，说明原文 / 时间戳 / 摘要被改动**；
+  - `RAW_MISSING` —— 原文为空，无从复算。
+  - 早先定义的 `PENDING`（缺时间戳无法校验）**已移除**：写入端把缺失时间戳按**空串**
+    参与哈希（`raw_text(None) == ""`），因此这类记录同样可以复算；把它当成待校验会对
+    合法存证误报。
+- `healthy`：`HASH_MISMATCH == 0 且 RAW_MISSING == 0`，供页面直接判断整体是否正常。
+- `source`：实际读取的主机 / 库 / 表，用于排除「页面和 Navicat 看的不是同一个库」。
+- **校验规则必须与写入端完全一致**（分隔符 `0x1F`、NULL 时间戳按空串、大小写敏感）；
+  任一端改动都会让全部存证被判成篡改，或让真正的篡改被判成正常。
 - 查询失败时返回 **503** 并记录日志（**不再返回 `total: 0`**）：把数据库故障降级成
-  「0 条存证」会让「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被归档清空了。
+  「0 条存证」会让「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被清空了。
+- 性能：当前实现对**整表**复算 SHA-256，万级行数约 0.2 秒。百万级时应改为增量校验
+  或异步任务（见 `docs/TODO.md`）。
 
 ### 7.2 `GET /api/v1/evidence`
 
@@ -615,6 +629,14 @@ Windows 旧字段兼容示例：
 | `size` | integer | `30` | 1～100；越界返回 422 |
 | `platform` | string/null | null | 精确匹配 `platform`（`linux`/`windows`） |
 | `keyword` | string/null | null | 对 `raw_log`/`client_id`/`source`/`log_hash` 做 `LIKE` 模糊匹配 |
+| `verify` | string/null | null | `VALID`/`HASH_MISMATCH`/`RAW_MISSING`，只看某一类；其他值返回 400 |
+| `start` | string/null | null | `YYYY-MM-DD`，按入库时间 `created_at` 过滤，含当天 00:00:00 |
+| `end` | string/null | null | `YYYY-MM-DD`，按入库时间 `created_at` 过滤，含当天 23:59:59 |
+
+`start`/`end` 用**入库时间**而不是 `event_time`：采集端补传的历史日志其事件时间可能很早，
+按入库时间才能回答「这段时间系统实际存了什么」。日期格式错误返回 400（`日期格式应为 YYYY-MM-DD`）。
+
+每行额外返回 `verify_status`（取值同上），用来直接筛出被改动的记录。
 
 ```json
 {
@@ -626,7 +648,8 @@ Windows 旧字段兼容示例：
 
 - 现在由数据库侧 `LIMIT/OFFSET` 真分页（旧实现一次性取回全部再在 Python 切片）。
 - `items` 每项字段固定为：`id`、`log_timestamp`、`platform`、`source`、`client_id`、
-  `event_time`、`created_at`、`log_hash`；**不返回 `raw_log` 原文**，避免列表响应过大。
+  `event_time`、`created_at`、`log_hash`、`verify_status`；**不返回 `raw_log` 原文**，
+  避免列表响应过大（`verify_status` 由 SQL 复算得出，不需要把原文传给客户端）。
 - 查询失败时返回 **503**（同 §7.1），不返回空列表冒充「没有数据」。
 
 ### 7.3 `GET /api/v1/evidence/export`
@@ -637,12 +660,16 @@ Windows 旧字段兼容示例：
 |---|---|---:|---|
 | `platform` | string/null | null | 同 §7.2 |
 | `keyword` | string/null | null | 同 §7.2 |
+| `verify` | string/null | null | 同 §7.2，用来只导出异常行 |
+| `start` | string/null | null | 同 §7.2（入库时间范围） |
+| `end` | string/null | null | 同 §7.2（入库时间范围） |
 | `size` | integer | `10000` | 1～100000，单次导出上限 |
 
 - HTTP 200，`Content-Type: text/csv`
 - `Content-Disposition: attachment; filename="log-hash-evidence.csv"`
-- UTF-8 BOM；列顺序 `id, log_hash, log_timestamp, platform, source, client_id, event_time, created_at`
-  （**不含 `raw_log`**；需要原文请用归档接口导出的 CSV，它包含全部列）
+- UTF-8 BOM；列顺序 `id, log_timestamp, platform, source, client_id, event_time, created_at,
+  log_hash, verify_status`（**不含 `raw_log`**；需要原文请用归档接口导出的 CSV，它包含全部列）
+- 带 `verify_status` 便于在 Excel 里直接筛出被改动的记录
 - 查询失败时返回 **503**，不会返回一个看似正常的空 CSV
 
 ### 7.4 `GET /api/v1/archive/preview`

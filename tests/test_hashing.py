@@ -131,3 +131,32 @@ def test_raw_log_is_not_truncated():
     row, _ = hashing.build_evidence_row("linux", {"log": long_log, "timestamp": "t"})
     assert row["raw_log"] == long_log
     assert row["log_hash"] == _expected("t", long_log)
+
+
+# --- 缺时间戳时的哈希定义（校验端依赖这条规则）-------------------------------
+
+def test_missing_timestamp_hashes_as_empty_string():
+    """`timestamp` 缺失时按**空串**参与哈希，不是跳过、也不是用别的占位。
+
+    这条规则被校验端依赖：SQL 侧复算用 `IFNULL(log_timestamp,'')`，
+    与这里的 `raw_text(None) == ""` 必须一致。若把「时间戳为 NULL」
+    当成无法校验，就会对「采集端没带 timestamp」的合法存证误报。
+    """
+    assert hashing.raw_text(None) == ""
+    assert hashing.compute_log_hash(None, "abc") == hashing.compute_log_hash("", "abc")
+    assert hashing.compute_log_hash(None, "abc") == _expected("", "abc")
+
+
+def test_missing_timestamp_row_is_verifiable():
+    """缺时间戳的行写出来之后，必须能被自己的校验函数复算通过。"""
+    row, error = hashing.build_evidence_row("linux", {"log": "没有任何时间信息的一行"})
+    assert error is None
+    assert row["log_timestamp"] is None
+    assert hashing.verify_log_hash(row) is True
+
+
+def test_empty_timestamp_and_null_timestamp_are_the_same_hash():
+    """空串时间戳与缺失时间戳产生同一摘要——两者在库里无法区分，这是刻意的。"""
+    row_none, _ = hashing.build_evidence_row("linux", {"log": "x"})
+    row_empty, _ = hashing.build_evidence_row("linux", {"log": "x", "timestamp": ""})
+    assert row_none["log_hash"] == row_empty["log_hash"]

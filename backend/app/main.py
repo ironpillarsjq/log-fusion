@@ -601,8 +601,30 @@ def export_logs(platform: str = "Linux", category: str = "authentication_session
 
 EVIDENCE_COLUMNS = ("id", "log_timestamp", "platform", "source", "client_id", "event_time", "created_at", "log_hash")
 
+EVIDENCE_STATUSES = ("VALID", "HASH_MISMATCH", "RAW_MISSING")
 
-def _evidence_where(platform: str | None, keyword: str | None) -> tuple[str, dict]:
+# 逐条校验分类，由 MySQL 自己复算摘要，**必须与写入端 `hashing.compute_log_hash` 完全同规则**：
+#   payload = raw_text(log_timestamp) + 0x1F + raw_text(raw_log)
+# 其中 `raw_text(None)` 等于空串，所以这里用 `IFNULL(log_timestamp,'')` 而不是把
+# 「时间戳为 NULL」当成无法校验——否则会对「采集端没带 timestamp」的合法存证（写入时
+# 就是按空串算的）误报，制造假警报。比较用 `<=>` 做 NULL 安全等值判断。
+# 之所以放在 SQL 里：`raw_log` 是 LONGTEXT，拉到 Python 再算会把整表原文读进内存。
+#   RAW_MISSING   —— 原文为空，无从复算
+#   VALID         —— 复算结果与存证摘要一致
+#   HASH_MISMATCH —— 复算结果与存证摘要不一致（原文 / 时间戳 / 摘要被改动）
+EVIDENCE_VERIFY_SQL = """CASE
+        WHEN raw_log IS NULL OR TRIM(raw_log) = '' THEN 'RAW_MISSING'
+        WHEN SHA2(CONCAT(IFNULL(log_timestamp, ''), CHAR(31), raw_log), 256) <=> log_hash THEN 'VALID'
+        ELSE 'HASH_MISMATCH'
+    END"""
+
+
+def _evidence_where(
+    platform: str | None,
+    keyword: str | None,
+    start: str | None = None,
+    end: str | None = None,
+) -> tuple[str, dict]:
     conditions, params = [], {}
     if platform:
         conditions.append("platform = :platform")
@@ -610,6 +632,16 @@ def _evidence_where(platform: str | None, keyword: str | None) -> tuple[str, dic
     if keyword:
         conditions.append("(raw_log LIKE :keyword OR client_id LIKE :keyword OR source LIKE :keyword OR log_hash LIKE :keyword)")
         params["keyword"] = f"%{keyword}%"
+    # 时间范围按入库时间 created_at 过滤（与归档口径一致）：采集端补传的历史日志
+    # 其 event_time 可能很早，用 created_at 才能回答「这段时间系统存了什么」。
+    start_at = _parse_date(start)
+    if start_at is not None:
+        conditions.append("created_at >= :start_at")
+        params["start_at"] = start_at
+    end_at = _parse_date(end, end_of_day=True)
+    if end_at is not None:
+        conditions.append("created_at <= :end_at")
+        params["end_at"] = end_at
     return (" WHERE " + " AND ".join(conditions) if conditions else ""), params
 
 
@@ -617,20 +649,43 @@ def _evidence_table() -> str:
     return f"`{settings.log_hash_db}`.`{settings.log_hash_table}`"
 
 
+def _evidence_source() -> dict:
+    """当前存证数据来源，随响应返回。
+
+    排查「页面没数据」时最常见的误判是「看的不是同一个库」。把实际连接目标
+    一并返回，就不用靠猜（不含密码）。
+    """
+    return {"host": settings.db_host, "database": settings.log_hash_db, "table": settings.log_hash_table}
+
+
 @app.get("/api/v1/evidence/summary")
 def evidence_summary():
-    """存证摘要：直接对 log_hash 表做 COUNT，不再受单次取数上限影响。
+    """存证摘要：一次扫描同时给出总数与四类校验结果。
 
     查询失败时返回 **503** 而不是 0：把数据库故障降级成「0 条存证」会让
     「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被清空了。
+
+    注意：本接口对整表复算 SHA-256（单次全表扫描）。当前万级规模在百毫秒内
+    完成；增长到百万级时应改为增量校验或异步任务（见 `docs/TODO.md`）。
     """
+    table = _evidence_table()
     try:
-        total = one(hash_engine, f"SELECT COUNT(*) AS n FROM {_evidence_table()}")["n"]
+        counted = rows(
+            hash_engine,
+            f"SELECT {EVIDENCE_VERIFY_SQL} AS verify_status, COUNT(*) AS n FROM {table} GROUP BY verify_status",
+        )
     except Exception as exc:
         logger.exception("存证摘要查询失败")
         raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
-    statuses = {"VALID": total, "HASH_MISMATCH": 0, "RAW_MISSING": 0, "PENDING": 0}
-    return {"code": 0, "message": "ok", "data": {"total": total, "statuses": statuses}}
+    found = {item["verify_status"]: int(item["n"]) for item in counted}
+    statuses = {name: found.get(name, 0) for name in EVIDENCE_STATUSES}
+    total = sum(statuses.values())
+    return {"code": 0, "message": "ok", "data": {
+        "total": total,
+        "statuses": statuses,
+        "healthy": statuses["HASH_MISMATCH"] == 0 and statuses["RAW_MISSING"] == 0,
+        "source": _evidence_source(),
+    }}
 
 
 @app.get("/api/v1/evidence")
@@ -639,18 +694,41 @@ def evidence_list(
     size: int = Query(30, ge=1, le=100),
     platform: str | None = None,
     keyword: str | None = None,
+    verify: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ):
-    """存证分页列表：数据库侧 LIMIT/OFFSET 分页，不再全量取回后在 Python 切片。"""
+    """存证分页列表：数据库侧 LIMIT/OFFSET 分页，并逐条给出校验结果。
+
+    `verify` 可传 `VALID`/`HASH_MISMATCH`/`RAW_MISSING` 只看某一类，用来直接
+    筛出被改动的记录；`start`/`end` 为 `YYYY-MM-DD`，按入库时间 `created_at`
+    过滤（end 含当天 23:59:59）。
+    """
     page = max(1, page)
-    where, params = _evidence_where(platform, keyword)
+    where, params = _evidence_where(platform, keyword, start, end)
     table = _evidence_table()
-    selected = ", ".join(f"`{name}`" for name in EVIDENCE_COLUMNS)
+
+    verify_filter = None
+    if verify:
+        verify_filter = verify.strip().upper()
+        if verify_filter not in EVIDENCE_STATUSES:
+            raise HTTPException(400, f"verify 只能是 {'/'.join(EVIDENCE_STATUSES)}")
+
+    inner = (
+        f"SELECT `id`, `log_timestamp`, `platform`, `source`, `client_id`, `event_time`, "
+        f"`created_at`, `log_hash`, {EVIDENCE_VERIFY_SQL} AS verify_status FROM {table}{where}"
+    )
+    outer, outer_params = "", dict(params)
+    if verify_filter:
+        outer = " WHERE verify_status = :verify"
+        outer_params["verify"] = verify_filter
+
     try:
-        total = one(hash_engine, f"SELECT COUNT(*) AS n FROM {table}{where}", params)["n"]
+        total = one(hash_engine, f"SELECT COUNT(*) AS n FROM ({inner}) t{outer}", outer_params)["n"]
         items = rows(
             hash_engine,
-            f"SELECT {selected} FROM {table}{where} ORDER BY id DESC LIMIT :limit OFFSET :offset",
-            dict(params, limit=size, offset=(page - 1) * size),
+            f"SELECT * FROM ({inner}) t{outer} ORDER BY id DESC LIMIT :limit OFFSET :offset",
+            dict(outer_params, limit=size, offset=(page - 1) * size),
         )
     except Exception as exc:
         logger.exception("存证列表查询失败")
@@ -658,26 +736,52 @@ def evidence_list(
     return {"code": 0, "message": "ok", "data": {
         "items": items, "page": page, "size": size, "total": total,
         "pages": (total + size - 1) // size if size else 0,
+        "verify": verify_filter,
+        "source": _evidence_source(),
     }}
 
 
 @app.get("/api/v1/evidence/export")
-def evidence_export(platform: str | None = None, keyword: str | None = None, size: int = Query(10000, ge=1, le=100000)):
-    """存证 CSV 导出（只读，不删除）。删除请走 /api/v1/archive/manual。"""
-    where, params = _evidence_where(platform, keyword)
+def evidence_export(
+    platform: str | None = None,
+    keyword: str | None = None,
+    verify: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    size: int = Query(10000, ge=1, le=100000),
+):
+    """存证 CSV 导出（只读，不删除）。删除请走 /api/v1/archive/manual。
+
+    含逐条校验结果 `verify_status`：导出后可在 Excel 里直接筛出被改动的记录。
+    筛选参数与 §7.2 列表一致（含入库时间范围 `start`/`end`）。
+    """
+    where, params = _evidence_where(platform, keyword, start, end)
     table = _evidence_table()
-    selected = ", ".join(f"`{name}`" for name in EVIDENCE_COLUMNS)
+    verify_filter = None
+    if verify:
+        verify_filter = verify.strip().upper()
+        if verify_filter not in EVIDENCE_STATUSES:
+            raise HTTPException(400, f"verify 只能是 {'/'.join(EVIDENCE_STATUSES)}")
+    inner = (
+        f"SELECT {', '.join(f'`{name}`' for name in EVIDENCE_COLUMNS)}, "
+        f"{EVIDENCE_VERIFY_SQL} AS verify_status FROM {table}{where}"
+    )
+    outer, outer_params = "", dict(params)
+    if verify_filter:
+        outer = " WHERE verify_status = :verify"
+        outer_params["verify"] = verify_filter
     try:
         items = rows(
             hash_engine,
-            f"SELECT {selected} FROM {table}{where} ORDER BY id DESC LIMIT :limit",
-            dict(params, limit=size),
+            f"SELECT * FROM ({inner}) t{outer} ORDER BY id DESC LIMIT :limit",
+            dict(outer_params, limit=size),
         )
     except Exception as exc:
         logger.exception("存证导出查询失败")
         raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(EVIDENCE_COLUMNS), extrasaction="ignore")
+    fields = list(EVIDENCE_COLUMNS) + ["verify_status"]
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(items)
     return StreamingResponse(
