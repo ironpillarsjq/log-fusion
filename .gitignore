@@ -7,3 +7,4 @@ __pycache__/
 # 归档 CSV 是运行期产物（可含原始日志原文），不入库
 data/
 backend/data/
+软件/
