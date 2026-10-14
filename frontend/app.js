@@ -10,6 +10,12 @@ function dashboard() {
     // 概览「哈希存证」面板：/api/v1/evidence/summary（30 秒一轮）。失败时接口返回 503，
     // 此时必须显示「不可用」而不是 0——把故障显示成「0 条存证」会让人以为存证被清了。
     hashTotal:0,hashStatuses:null,hashMetrics:[],hashError:'',hashNote:'',hashCheckedAt:'',hashBusy:false,
+    // 存证页的筛选与校验展示：verify 传 HASH_MISMATCH / RAW_MISSING / VALID 可只看某一类。
+    // evidenceSource 显示实际读取的库表，避免「看的不是同一个库」这类误判。
+    // evidenceTab 是「存证中心」的功能分区：overview / ledger / archive / policy。
+    evidenceVerify:'',evidenceKeyword:'',evidenceSource:'',evidenceTampered:0,
+    evidencePlatform:'',evidenceStart:'',evidenceEnd:'',
+    evidenceTab:'overview',
     /* 心跳延迟曲线的绘制参数
      * DELAY_AXIS_FLOOR：纵轴下限（秒）——延迟只有 1 秒时也要有 5 秒的画布高度，
      *   否则 0.2 秒的正常起伏就会占满 10% 的高度，看起来像在剧烈波动。
@@ -292,8 +298,8 @@ function dashboard() {
           {label:'哈希异常',value:this.fmt(st.HASH_MISMATCH),num:Number(st.HASH_MISMATCH||0),tone:'bad'},
           {label:'原始缺失',value:this.fmt(st.RAW_MISSING),num:Number(st.RAW_MISSING||0),tone:'warn'}
         ]);
-        this.hashNote='更新于 '+this.hashCheckedAt+'；摘要按 sha256(时间+原文) 在入库前计算并写入，因此正常状态下「哈希异常」为 0，'
-          +'逐条篡改复算需要按 docs/DATABASE.md §3.2 手工执行（接口暂不提供）。';
+        this.hashNote='更新于 '+this.hashCheckedAt+'；摘要按 sha256(时间+原文) 在入库前计算并写入。'
+          +'接口已逐条复算（原始缺失不计入异常，仅说明无从复算）。';
       }catch(e){
         this.hashTotal=0;this.hashStatuses=null;this.hashMetrics=[];this.hashCheckedAt='';
         this.hashError='存证库查询失败（'+(e&&e.message?e.message:e)+'）：这不代表没有存证，请检查 log_hash 库连接。';
@@ -306,9 +312,9 @@ function dashboard() {
     hashValidPct(){return this.hashTotal?Math.round(this.hashCount('VALID')/this.hashTotal*1000)/10:0},
     hashBar(){
       const total=this.hashTotal;
-      if(!this.hashStatuses||!total)return {ok:0,warn:0,bad:0,pending:0};
+      if(!this.hashStatuses||!total)return {ok:0,warn:0,bad:0};
       const pct=v=>Math.round(this.hashCount(v)/total*1000)/10;
-      return {ok:pct('VALID'),warn:pct('RAW_MISSING'),bad:pct('HASH_MISMATCH'),pending:pct('PENDING')};
+      return {ok:pct('VALID'),warn:pct('RAW_MISSING'),bad:pct('HASH_MISMATCH')};
     },
     hashTone(){
       if(this.hashError)return 'bad';
@@ -730,8 +736,61 @@ function dashboard() {
     },
 
     /* ===== 完整性存证 ===================================================== */
-    async loadEvidence(){try{const [s,d]=await Promise.all([this.api('/api/v1/evidence/summary'),this.api(`/api/v1/evidence?page=${this.evidencePage}&size=${this.PAGE_SIZE}`)]);this.evidence=d.items||[];this.evidenceTotal=Number(d.total||0);this.evidencePages=Math.max(1,Number(d.pages||Math.ceil(this.evidenceTotal/this.PAGE_SIZE)));this.setMetrics('evidenceMetrics',[{label:'存证总数',value:this.fmt(s.total),num:Number(s.total||0),hint:'原始日志记录'},{label:'已校验',value:this.fmt(s.statuses.VALID),num:Number(s.statuses.VALID||0),hint:'SHA-256 摘要存在'},{label:'哈希异常',value:this.fmt(s.statuses.HASH_MISMATCH),num:Number(s.statuses.HASH_MISMATCH||0),hint:'需要复核'},{label:'归档阈值',value:this.archiveMonths+' 个月',hint:'按入库时间自动归档'}]);}catch(e){this.warn('存证数据加载失败',e)}},
+    // 逐条校验由后端在 SQL 里复算 sha256(log_timestamp + 0x1F + raw_log) 得到
+    // verify_status，前端只负责展示：HASH_MISMATCH 表示原文/时间戳/摘要被改动。
+    verifyLabel(s){return s==='VALID'?'一致':s==='HASH_MISMATCH'?'哈希不一致':'原文缺失'},
+    verifyBadgeClass(s){return s==='VALID'?'text-bg-success':s==='HASH_MISMATCH'?'text-bg-danger':'text-bg-warning'},
+    async loadEvidence(){
+      try{
+        const q=new URLSearchParams({page:this.evidencePage,size:this.PAGE_SIZE});
+        if(this.evidenceVerify)q.set('verify',this.evidenceVerify);
+        if(this.evidenceKeyword)q.set('keyword',this.evidenceKeyword);
+        if(this.evidencePlatform)q.set('platform',this.evidencePlatform);
+        if(this.evidenceStart)q.set('start',this.evidenceStart);
+        if(this.evidenceEnd)q.set('end',this.evidenceEnd);
+        const [s,d]=await Promise.all([
+          this.api('/api/v1/evidence/summary'),
+          this.api('/api/v1/evidence?'+q.toString()),
+        ]);
+        const st=s.statuses||{};
+        this.evidence=d.items||[];
+        this.evidenceTotal=Number(d.total||0);
+        this.evidencePages=Math.max(1,Number(d.pages||Math.ceil(this.evidenceTotal/this.PAGE_SIZE)));
+        this.evidenceSource=(d.source?s.source.host+' / '+s.source.database+'.'+s.source.table:'');
+        this.evidenceTampered=Number(st.HASH_MISMATCH||0)+Number(st.RAW_MISSING||0);
+        this.setMetrics('evidenceMetrics',[
+          {label:'存证总数',value:this.fmt(s.total),num:Number(s.total||0),hint:'原始日志记录'},
+          {label:'校验一致',value:this.fmt(st.VALID),num:Number(st.VALID||0),hint:'复算摘要与存证一致',tone:'ok'},
+          {label:'哈希不一致',value:this.fmt(st.HASH_MISMATCH),num:Number(st.HASH_MISMATCH||0),hint:'原文或时间戳被改动',tone:'bad'},
+          {label:'原文缺失',value:this.fmt(st.RAW_MISSING),num:Number(st.RAW_MISSING||0),hint:'无从复算',tone:'warn'},
+        ]);
+      }catch(e){this.warn('存证数据加载失败',e)}
+    },
     gotoEvidencePage(p){if(p<1||p>this.evidencePages||p===this.evidencePage)return;this.evidencePage=p;return this.loadEvidence()},
+    // 导出当前筛选条件：与列表使用同一组参数，导出的 CSV 与页面看到的完全一致
+    evidenceExportUrl(){
+      const q=new URLSearchParams();
+      if(this.evidenceVerify)q.set('verify',this.evidenceVerify);
+      if(this.evidenceKeyword)q.set('keyword',this.evidenceKeyword);
+      if(this.evidencePlatform)q.set('platform',this.evidencePlatform);
+      if(this.evidenceStart)q.set('start',this.evidenceStart);
+      if(this.evidenceEnd)q.set('end',this.evidenceEnd);
+      const suffix=q.toString();
+      return '/api/v1/evidence/export'+(suffix?'?'+suffix:'');
+    },
+    exportEvidence(){location.href=this.evidenceExportUrl()},
+    resetEvidenceFilters(){
+      this.evidenceVerify='';this.evidenceKeyword='';this.evidencePlatform='';
+      this.evidenceStart='';this.evidenceEnd='';this.evidencePage=1;return this.loadEvidence();
+    },
+    // 存证中心分区：只有一个页面，但按职责拆分，避免归档等危险操作与日常查询混在一起
+    evidenceTabs(){return [
+      {key:'overview',label:'存证总览'},
+      {key:'ledger',label:'存证台账'},
+      {key:'archive',label:'归档管理'},
+      {key:'policy',label:'算法与策略'},
+    ]},
+    gotoEvidenceTab(k){this.evidenceTab=k},
 
     // 归档：先「仅统计」看到会删多少条，再二次确认执行导出并删除
     async previewArchive(){
