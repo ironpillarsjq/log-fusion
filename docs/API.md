@@ -7,6 +7,7 @@
 - 默认开发地址：`http://127.0.0.1:8080`。
 - 当前没有认证或授权，请求不需要业务自定义 Header。
 - JSON 请求应发送 `Content-Type: application/json`。
+- JSON 请求体和响应体统一使用 UTF-8（请求体无 BOM），不得发送 GBK/ANSI 编码的 JSON 字节；JSON 的 `\uXXXX` Unicode 转义允许使用。前端通过 `Response.json()` 解码响应后展示 Unicode 文本，不做本地代码页转码。CSV 使用 UTF-8，导出可带 BOM。
 - 多数查询接口成功响应为 `{ "code": 0, "message": "ok", "data": ... }`，但健康检查、采集写入、心跳、HTML、WebSocket 和 CSV 不使用该包装。
 - 未被业务代码捕获的异常由 FastAPI 返回 500；查询参数或请求体不满足类型/范围时通常返回 422。
 - 框架自动提供 `/docs`、`/redoc` 和 `/openapi.json`。

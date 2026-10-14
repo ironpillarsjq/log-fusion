@@ -4,6 +4,14 @@
 
 ## 1. 项目目标与状态
 
+### 日志编码约定
+
+日志链路统一使用 **UTF-8**：采集端 JSON/JSONL 文件、HTTP 请求与响应、服务端处理、导出文件和前端页面展示均遵守此约定。Windows 事件日志原生字符串由采集插件转换为 Unicode 后，以 UTF-8 输出；禁止将 GBK/ANSI 字节直接作为 JSON 请求体发送。MySQL 连接使用 `utf8mb4`，表/列也应支持 `utf8mb4`（既有表实际字符集需单独核验）。
+
+当前页面 `backend/app/templates/dashboard.html` 声明 `<meta charset="utf-8">`；`frontend/app.js` 通过 `fetch` 的 `Response.json()` 读取 UTF-8 JSON，日志表格通过 Alpine `x-text="row[k]"` 展示解码后的 Unicode 字符串，不进行 GBK/ANSI 二次转码。JSON 中的 `\uXXXX` 是合法 Unicode 转义，JSON 解析后会还原为对应字符；嵌套 JSON 字符串中的转义显示属于内容格式问题，不是页面字符集问题。
+
+JSON/JSONL 使用 UTF-8 无 BOM；CSV 导出允许附加 UTF-8 BOM 以方便 Excel 识别；PowerShell 5.1 的中文 `.ps1` 文件必须为 UTF-8 with BOM。已有乱码或 `�` 如果在采集/入库前已经产生，前端设置 UTF-8 无法恢复，需修正采集端后重新采集。
+
 Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux 审计日志与 Windows 事件日志，提供分类入库、统计查询、CSV 导出、客户端心跳实时监控（WebSocket）、原始日志 SHA-256 存证与归档。
 
 当前项目处于开发中期：核心查询、采集写入、原始日志 SHA-256 存证与归档、仪表盘、持久化心跳、实时通道（WebSocket，含断线重连与假死检测，SSE 已移除）和**实时动态图表看板**已经具备；认证授权、正式数据库迁移、存证逐条校验接口、多实例实时广播（当前必须单 worker）和集成测试/CI 尚未完成（已有 210 个不连库的契约用例，其中 21 个归档用例需要 `tmp_path`）。

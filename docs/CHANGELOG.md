@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+### Documentation — 2026-10-14（统一日志编码）
+
+- 明确日志从采集、JSON/JSONL、HTTP 到前端展示统一使用 UTF-8；数据库连接对应 `utf8mb4`，既有表/列字符集仍需实测核验。
+- 检查当前页面 UTF-8 声明、前端 `Response.json()` 解码及 Alpine `x-text` 日志渲染链路；无需修改前端代码。说明 Unicode 转义与乱码的区别，以及 CSV/PowerShell 5.1 的 BOM 例外。
+
 ### Changed — 2026-10-14（采集错误控制台诊断）
 
 - 日志采集解析、业务入库、存证失败时，在 `log_fusion` ERROR 日志中打印批次计数与每条错误的平台、索引、客户端、阶段、表名和原因；HTTP 响应截断不影响控制台诊断。
