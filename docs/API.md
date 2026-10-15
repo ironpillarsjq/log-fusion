@@ -45,6 +45,7 @@
 | POST | `/api/v1/archive/manual` | JSON | 手动归档：导出区间存证后删除 |
 | POST | `/api/v1/archive/auto` | JSON | 立即执行一次自动归档 |
 | GET | `/api/v1/archive/log` | JSON | 归档台账列表 |
+| POST | `/api/v1/admin/update` | JSON | 触发服务端代码更新（停服 → 原地 git 更新 → 重启） |
 
 ## 3. 页面与健康接口
 
@@ -764,7 +765,49 @@ Windows 旧字段兼容示例：
    避免归档期间新写入、同样满足条件的记录被误删；
 6. 删除成功后写一条 `archive_log` 台账；台账写入失败不影响已完成的归档。
 
-## 8. 当前未实现的旧契约接口
+## 8. 服务端维护接口
+
+### 8.1 `POST /api/v1/admin/update`
+
+触发一次服务端代码更新：从 GitHub 拉取最新代码，停止服务、替换部署目录后重新启动。完整流程与部署前提见 `docs/DEPLOY.md`。
+
+请求体（必填）：
+
+```json
+{"confirm": true}
+```
+
+- `confirm` 必须为 `true`，否则返回 **400**（避免误触）。
+- 该接口**不连接数据库**，也没有鉴权：任何能访问本服务的人都能触发一次停服重部署。仅适用于受控内网/测试环境。
+
+处理是**异步**的：接口把 `deploy/update-log-fusion.sh` 复制到仓库外的固定路径
+（`/usr/local/bin/log-fusion-update.sh`），再用 `systemd-run` 起一个**独立**的 transient 单元
+`log-fusion-update` 后立即返回；真正的停服 / 克隆 / 重启由该单元执行。之所以用独立单元而不是直接
+`setsid` 后台运行，是因为 systemd 停止 `log-fusion` 时会清理它整条 cgroup，普通后台进程会被一起杀掉，
+导致更新半途中断（见 `docs/DEPLOY.md`）。
+
+成功响应：
+
+```json
+{"code": 0, "message": "更新已启动",
+ "data": {"unit": "log-fusion-update", "log": "journalctl -u log-fusion-update -f",
+          "note": "服务将在数秒内重启，期间页面会短暂不可用"}}
+```
+
+错误：
+
+| 场景 | HTTP | detail |
+|---|---|---|
+| 缺少 `confirm` | 400 | 需要 confirm=true 才会执行更新 |
+| 服务器没有 `systemd-run` | 500 | 服务器未安装 systemd-run，无法执行更新（见 docs/DEPLOY.md） |
+| 仓库内找不到更新脚本 | 500 | 更新脚本不存在：… |
+| 已有更新在进行 | 409 | 已有一次更新正在进行，请稍后再试 |
+| 复制脚本 / 启动失败 | 500 | 准备更新脚本失败 / 启动更新失败：… |
+
+状态查询：`systemctl status log-fusion-update`；日志：`journalctl -u log-fusion-update -f`。
+升级完成后该 transient 单元会退出（`--collect` 会回收失败单元的残留）。
+
+## 9. 当前未实现的旧契约接口
 
 以下能力可在遗留文档中找到，但当前 FastAPI 路由不存在：
 

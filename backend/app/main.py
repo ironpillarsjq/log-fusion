@@ -3,6 +3,8 @@ import csv
 import io
 import json
 import logging
+import shutil
+import subprocess
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -943,3 +945,79 @@ def archive_auto():
         logger.exception("自动归档失败")
         raise HTTPException(500, f"自动归档失败（未删除任何记录）：{type(exc).__name__}: {str(exc)[:200]}")
     return {"code": 0, "message": "ok", "data": dict(info, enabled=True, cutoff=cutoff.isoformat())}
+
+
+# ── 服务端代码更新（停服 → 原地 git 更新 → 重启）────────────────────────────────
+# 高影响操作：会重启整个服务并覆盖 /opt/log-fusion。当前项目没有任何鉴权，
+# 任何能打开页面的人都能触发，仅适用于受控内网/测试环境（见 docs/DEPLOY.md）。
+_UPDATE_UNIT = "log-fusion-update"
+_UPDATE_SCRIPT_DEST = Path("/usr/local/bin/log-fusion-update.sh")
+_UPDATE_SCRIPT_SRC = Path(__file__).resolve().parents[2] / "deploy" / "update-log-fusion.sh"
+
+
+def _update_in_progress() -> bool:
+    """是否有一次更新单元正在运行（用于拒绝并发触发）。
+
+    更新以独立 systemd 单元执行，所以用 `systemctl is-active` 判断；
+    服务器没有 systemd（如本地开发）时返回 False，由调用方另行报错。
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", _UPDATE_UNIT],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+@app.post("/api/v1/admin/update")
+def admin_update(payload: dict = Body(...)):
+    """触发一次服务端代码更新（从 GitHub 拉取最新代码并重启服务）。
+
+    请求体：`{"confirm": true}`，`confirm` 必须为 true 以避免误触。
+    更新是异步的：接口只负责用 systemd-run 起一个**独立**的 transient 单元后立即返回，
+    真正的停服 / 克隆 / 重启由 deploy/update-log-fusion.sh 完成。
+    """
+    if not payload.get("confirm"):
+        raise HTTPException(400, "需要 confirm=true 才会执行更新")
+
+    systemd_run = shutil.which("systemd-run")
+    if systemd_run is None:
+        raise HTTPException(500, "服务器未安装 systemd-run，无法执行更新（见 docs/DEPLOY.md）")
+    if not _UPDATE_SCRIPT_SRC.is_file():
+        raise HTTPException(500, f"更新脚本不存在：{_UPDATE_SCRIPT_SRC}")
+    if _update_in_progress():
+        raise HTTPException(409, "已有一次更新正在进行，请稍后再试")
+
+    # 脚本会被复制到仓库之外再执行：更新过程要 git reset 仓库里的文件，
+    # 而 bash 是边读边执行脚本的，正在执行的脚本文件被改写会导致执行错乱。
+    try:
+        shutil.copyfile(_UPDATE_SCRIPT_SRC, _UPDATE_SCRIPT_DEST)
+        _UPDATE_SCRIPT_DEST.chmod(0o755)
+    except OSError as exc:
+        raise HTTPException(500, f"准备更新脚本失败：{exc}") from exc
+
+    # 同名单元若以 failed 状态残留，会让 systemd-run --unit 因重名失败，先尽力清理
+    with suppress(OSError):
+        subprocess.run(["systemctl", "reset-failed", _UPDATE_UNIT],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    # 关键：用 systemd-run 起独立 transient 单元。它由 systemd 直接托管、不属于本服务的
+    # cgroup，因此脚本里执行 `systemctl stop log-fusion` 时不会把它自己一起杀掉。
+    try:
+        subprocess.Popen(
+            [systemd_run, f"--unit={_UPDATE_UNIT}", "--collect",
+             "--description=log-fusion code update",
+             "/bin/bash", str(_UPDATE_SCRIPT_DEST)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise HTTPException(500, f"启动更新失败：{exc}") from exc
+
+    logger.warning("已触发服务端代码更新 unit=%s", _UPDATE_UNIT)
+    return {"code": 0, "message": "更新已启动", "data": {
+        "unit": _UPDATE_UNIT,
+        "log": f"journalctl -u {_UPDATE_UNIT} -f",
+        "note": "服务将在数秒内重启，期间页面会短暂不可用",
+    }}

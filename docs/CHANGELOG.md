@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+### Added — 2026-10-15（服务端一键更新：systemd 单元 + 更新接口 + 前端按钮）
+
+- 新增 `deploy/log-fusion.service`：把服务注册成 systemd 单元（`WorkingDirectory=/opt/log-fusion/backend`、`PYTHONPATH` 指向 backend、`ExecStart=<venv>/python run.py`、`Restart=always`、`KillSignal=SIGINT`），从此用 `systemctl start/stop/restart log-fusion` 管理，不再需要挂 SSH 前台终端。
+- 新增 `deploy/update-log-fusion.sh`：一键**原地**更新——校验是 git 工作树 → 备份服务器上未提交的改动为 patch → 停服 → `git fetch --prune` + `git reset --hard origin/main`（带超时兜底）→ 仅在 `requirements.txt` 有变化时装依赖 → 重启 → 最多 30 秒轮询 `/health` 自检；用 `flock` 防止并发更新。`.venv`/`backend/.env`/`data`/`backend/data` 都在 `.gitignore` 里，git 不会改动未跟踪/被忽略的文件，因此不再需要「搬出 → 删目录 → 重 clone → 搬回」，也**绝不使用 `git clean`**（见 ADR-020）。
+- 新增接口 `POST /api/v1/admin/update`（需 `confirm=true`）：把脚本复制到仓库外的 `/usr/local/bin/log-fusion-update.sh`，再用 `systemd-run --unit=log-fusion-update --collect` 起一个**独立**的 transient 单元执行后立即返回；已有更新在跑返回 409，服务器无 `systemd-run` 返回 500。用独立单元而非 `setsid`/`nohup`，是因为 systemd 停服会清理整条 cgroup，普通后台进程会被一起杀掉导致更新中断（详见 `docs/DEPLOY.md`）。
+- 前端新增「系统维护」页与「⇩ 拉取最新代码并重启服务」按钮：二次确认后触发接口，随后轮询 `/health`，服务恢复即自动刷新页面。
+- 新增 `docs/DEPLOY.md`：首次注册 systemd 服务、目录约定、两种更新方式、排查表与安全提醒。`app.js?v=` → `20261015-1`。
+- `.gitignore` 增加 `.venv/`（原地更新的前提是运行期文件都被忽略）；`tests/test_main_contracts.py` 新增两条契约测试，锁定「脚本只用 `reset --hard`、不含 `git clean`/`rm -rf`」与「`.gitignore` 必须忽略 `.venv/`/`.env`/`data/`/`backend/data/`」。
+- 无实际数据库结构变化；接口行为：仅新增 `POST /api/v1/admin/update` 一条路由（见 `docs/API.md` §8.1），其余接口不变。
+
 ### Added — 2026-10-15（绿盟用户日志查询脚本）
 
 - 新增独立标准库工具 `tools/nsfocus_log_search.py`：按用户提供的 API 手册 §3.1 登录获取 Token，按 §3.4.1 查询一页用户日志，支持已有 Token、时间范围、分页、查询字符串、JSON 保存及离线请求预览。

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 .vscode/
+.venv/
 .env
 .pytest_cache/
 # 归档 CSV 是运行期产物（可含原始日志原文），不入库

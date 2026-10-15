@@ -74,8 +74,8 @@ def test_documented_routes_match_application():
 
 
 def test_documented_route_count():
-    """docs/API.md §2 的接口总表当前有 25 条；新增/删除接口时同步更新此断言。"""
-    assert len(_documented_routes()) == 25
+    """docs/API.md §2 的接口总表当前有 26 条；新增/删除接口时同步更新此断言。"""
+    assert len(_documented_routes()) == 26
 
 
 # --- 心跳状态阈值与载荷 -------------------------------------------------------
@@ -699,3 +699,106 @@ def test_evidence_bad_date_returns_400(client):
     response = client.get("/api/v1/evidence?start=2026/10/01")
     assert response.status_code == 400
     assert "YYYY-MM-DD" in response.json()["detail"]
+
+
+# --- 服务端更新接口（POST /api/v1/admin/update） ------------------------------
+#
+# 该接口不连库；这里只验证触发链路：confirm 校验、systemd-run 调用、并发拒绝与降级报错。
+# 真实执行会停服并覆盖 /opt/log-fusion，绝不能在本机测试里真的跑，故全部 patch 掉。
+
+
+class _FakeCompleted:
+    """替代 subprocess.run 的返回值，只需要 returncode。"""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+def test_admin_update_requires_confirm(client):
+    response = client.post("/api/v1/admin/update", json={})
+    assert response.status_code == 400
+    assert "confirm" in response.json()["detail"]
+
+
+def test_admin_update_without_systemd_run_returns_500(monkeypatch, client):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    response = client.post("/api/v1/admin/update", json={"confirm": True})
+    assert response.status_code == 500
+    assert "systemd-run" in response.json()["detail"]
+
+
+def test_admin_update_missing_script_returns_500(monkeypatch, client, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+    monkeypatch.setattr(main, "_UPDATE_SCRIPT_SRC", tmp_path / "absent.sh")
+    response = client.post("/api/v1/admin/update", json={"confirm": True})
+    assert response.status_code == 500
+    assert "更新脚本不存在" in response.json()["detail"]
+
+
+def test_admin_update_rejects_concurrent_run(monkeypatch, client):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+    # is-active 返回 0 表示已有同名单元在运行
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _FakeCompleted(0))
+    response = client.post("/api/v1/admin/update", json={"confirm": True})
+    assert response.status_code == 409
+
+
+def test_admin_update_launches_detached_systemd_unit(monkeypatch, client, tmp_path):
+    launched: dict = {}
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None,
+    )
+    monkeypatch.setattr(main, "_UPDATE_SCRIPT_DEST", tmp_path / "log-fusion-update.sh")
+    # is-active 返回非 0 = 当前没有更新在跑；Popen 记录实际启动的命令
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _FakeCompleted(1))
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda args, **k: launched.setdefault("args", args)
+    )
+
+    response = client.post("/api/v1/admin/update", json={"confirm": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"]["unit"] == "log-fusion-update"
+
+    args = launched["args"]
+    assert args[0] == "/usr/bin/systemd-run"
+    assert "--unit=log-fusion-update" in args
+    # 脚本先被复制到仓库之外再执行——更新过程会 git reset 仓库里的文件，
+    # 不能让它覆盖自己正在读取的脚本。
+    assert str(tmp_path / "log-fusion-update.sh") in args
+    assert (tmp_path / "log-fusion-update.sh").is_file()
+
+
+def test_update_script_is_shipped_with_repo():
+    """更新脚本必须随仓库提供，否则接口在服务器上无从执行。"""
+    script = main._UPDATE_SCRIPT_SRC
+    assert script.is_file(), f"缺少更新脚本：{script}"
+    assert script.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
+
+
+def test_update_script_updates_in_place_without_clean():
+    """更新必须原地 git 更新：只 reset --hard，绝不 git clean、绝不删代码目录。
+
+    `.env` / `data` / `.venv` 全靠 .gitignore 保护；`git clean` 或
+    `rm -rf /opt/log-fusion` 会把它们一起删掉，所以这里逐条锁死。
+    注释里的说明不算（只检查可执行的代码行）。
+    """
+    text = main._UPDATE_SCRIPT_SRC.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert 'reset --hard "origin/$BRANCH"' in code
+    assert "git clean" not in code
+    assert "rm -rf" not in code
+
+
+def test_gitignore_protects_runtime_files_from_update():
+    """原地更新的前提：运行期文件必须被 .gitignore 忽略，否则 reset 会覆盖它们。"""
+    gitignore = main._UPDATE_SCRIPT_SRC.parents[1] / ".gitignore"
+    entries = {
+        line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()
+    }
+    for pattern in (".venv/", ".env", "data/", "backend/data/"):
+        assert pattern in entries, f".gitignore 缺少 {pattern}，原地更新会覆盖它"

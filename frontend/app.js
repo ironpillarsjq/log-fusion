@@ -30,6 +30,8 @@ function dashboard() {
     PAGE_SIZE:30,logPage:1,logPages:1,logTotal:0,evidencePage:1,evidencePages:1,evidenceTotal:0,
     // 存证归档（导出 + 删除）
     archiveStart:'',archiveEnd:'',archiveBusy:false,archiveMessage:'',archiveError:false,archiveMonths:3,
+    // 系统维护页：触发服务端代码更新（停服 → 原地 git 更新 → 重启），期间需轮询 /health 等恢复
+    updateBusy:false,updatePolling:false,updateMessage:'',updateError:false,
     fmt(v){return Number(v||0).toLocaleString('zh-CN')},
     pad(n){return String(n).padStart(2,'0')},
 
@@ -79,10 +81,10 @@ function dashboard() {
     /* ===== 导航（二级菜单 + hash 深链）==================================== */
     pageFromHash(){
       const raw=String(location.hash||'').replace(/^#\/?/,'');
-      return ['overview','heartbeat','logs','log-stats','evidence'].includes(raw)?raw:'';
+      return ['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(raw)?raw:'';
     },
     go(p,silent){
-      if(!['overview','heartbeat','logs','log-stats','evidence'].includes(p))return;
+      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(p))return;
       this.page=p;
       if(p==='logs'||p==='log-stats')this.navLogsOpen=true;
       try{history.replaceState(null,'','#/'+p)}catch(e){location.hash='#/'+p}
@@ -834,6 +836,48 @@ function dashboard() {
         if(d.deleted){this.evidencePage=1;await this.loadEvidence()}
       }catch(e){this.archiveError=true;this.archiveMessage='自动归档失败：'+(e&&e.message?e.message:e)}
       finally{this.archiveBusy=false}
+    },
+    /* ===== 系统维护：触发服务端代码更新 =====================================
+     * 接口只负责起一个独立的 systemd 单元后立即返回；服务随后会被重启，
+     * 因此这里主动轮询 /health，恢复后自动刷新页面。 */
+    async runUpdate(){
+      if(!window.confirm('将从 GitHub 拉取最新代码并重启后端服务。\n\n更新期间服务会短暂中断（约 10–30 秒），页面会自动等待并刷新。确定继续？'))return;
+      this.updateBusy=true;this.updateError=false;this.updateMessage='正在触发更新…';
+      try{
+        const r=await fetch('/api/v1/admin/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true})});
+        const j=await r.json().catch(()=>({}));
+        if(!r.ok){this.updateError=true;this.updateMessage='触发更新失败：'+((j&&j.detail)||('HTTP '+r.status));return}
+        const note=(j.data&&j.data.note)||'';
+        this.updateMessage='更新已启动，服务即将重启…'+(note?'（'+note+'）':'');
+        this.pollUpdateRecovery();
+      }catch(e){this.updateError=true;this.updateMessage='触发更新失败：'+(e&&e.message?e.message:e)}
+      finally{this.updateBusy=false}
+    },
+    pollUpdateRecovery(){
+      if(this.updatePolling)return;
+      this.updatePolling=true;
+      const started=Date.now();
+      const tick=async()=>{
+        if(Date.now()-started>180000){
+          this.updatePolling=false;this.updateError=true;
+          this.updateMessage='等待服务恢复超时（3 分钟）。请到服务器执行 journalctl -u log-fusion-update -f 查看日志。';
+          return;
+        }
+        let ok=false;
+        try{
+          const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),3000);
+          const r=await fetch('/health',{cache:'no-store',signal:ctl.signal});
+          clearTimeout(timer);ok=r.ok;
+        }catch(e){ok=false}
+        if(ok){
+          this.updateMessage='服务已恢复，正在刷新页面…';
+          this.updatePolling=false;
+          setTimeout(()=>location.reload(),800);
+          return;
+        }
+        setTimeout(tick,2000);
+      };
+      setTimeout(tick,5000);
     },
     exportLogs(){location.href=`/api/v1/logs/export?platform=${this.logPlatform}&category=${this.logCategory}&size=1000`},
     exportClients(){const text=['clientId,serverName,ipAddress,os,status',...this.clients.map(c=>[c.clientId,c.serverName,c.ipAddress,c.os_type,c.heartbeatStatus].map(x=>'"'+String(x||'').replaceAll('"','""')+'"').join(','))].join('\\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\\ufeff'+text],{type:'text/csv'}));a.download='clients.csv';a.click()},

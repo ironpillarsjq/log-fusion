@@ -37,7 +37,7 @@ flowchart LR
 
 | 组件 | 职责 | 状态边界 |
 |---|---|---|
-| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证列表/导出、归档接口、心跳 upsert、WebSocket、生命周期巡检与每日自动归档任务 | 应用主入口 |
+| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证列表/导出、归档接口、服务端更新触发接口、心跳 upsert、WebSocket、生命周期巡检与每日自动归档任务 | 应用主入口 |
 | `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置与归档策略（目录、保留月数、单批上限） | `get_settings()` 进程内缓存 |
 | `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
 | `backend/app/models.py` | 声明 `ClientStatus`、`LogHash`、`ArchiveLog` ORM 模型 | 覆盖平台心跳表、存证表与归档台账 |
@@ -51,6 +51,8 @@ flowchart LR
 | `dashboard.html` | 服务端页面骨架与四个功能区 | 根路由渲染 |
 | `frontend/app.js` | Alpine 页面状态、REST 调用、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
 | `启动服务.ps1` | 校验解释器、配置 PYTHONPATH、尝试开放防火墙、启动 Uvicorn | 默认 8080 |
+| `deploy/log-fusion.service` | systemd 单元：工作目录 `backend/`、`ExecStart=<venv>/python run.py`、`Restart=always` | 服务器部署用，见 `docs/DEPLOY.md` |
+| `deploy/update-log-fusion.sh` | 服务端一键更新：停服 → 备份未提交改动 → `git fetch` + `git reset --hard origin/main` → 按需装依赖 → 重启 → `/health` 自检 | 由 `/api/v1/admin/update` 经 `systemd-run` 以独立单元执行；运行期文件靠 `.gitignore` 保护（ADR-020） |
 | `backend/simulator/...` | 读取外部样例并发送心跳及两类日志 | 开发联调工具 |
 | `tools/nsfocus_log_search.py` | 按绿盟手册 §3.1 认证、§3.4.1 查询一页用户日志，支持请求预览和 JSON 保存 | 独立标准库命令行工具，直连外部设备，不接入应用或数据库 |
 
