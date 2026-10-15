@@ -45,7 +45,7 @@ flowchart LR
 | `backend/app/services.py` | 分类查询（列表上限 100 / 导出上限 10000）、汇总、跨库最近日志合并 | 同步 SQL |
 | `backend/app/metrics.py` | 图表聚合层：时间桶趋势与 TOP 排行（进程内 TTL 缓存）、心跳历史环形缓冲（watchdog 每 5 秒采样） | 进程内缓存/缓冲，单 worker，重启后心跳历史清零 |
 | `backend/app/parsers.py` | 原始日志 → 数据库行的解析（Linux auditd/syslog、Windows winlog），时间与列类型归一化 | 纯函数，无状态 |
-| `backend/app/hashing.py` | 原始日志存证：按 `sha256(timestamp + 0x1F + log)` 计算摘要并构造 `log_hash` 行 | 纯函数，无状态 |
+| `backend/app/hashing.py` | 原始日志存证：按 `sha256(时间戳 + 0x1F + 存证原文)` 计算摘要并构造 `log_hash` 行；Linux 原文取 `log` 字段，Windows 取整条记录的规范化 JSON | 纯函数，无状态 |
 | `backend/app/archive.py` | 存证归档：按条件选 id、分批取行、写 CSV 并校验落盘、按 id 删除、写归档台账 | 删除不可逆；文件落盘确认后才删 |
 | `backend/app/ws.py` | 维护浏览器 WebSocket 集合并广播快照 | 进程内，不跨 worker |
 | `dashboard.html` | 服务端页面骨架与四个功能区 | 根路由渲染 |

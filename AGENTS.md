@@ -22,7 +22,7 @@
 
 **双击请用 `启动服务.cmd` / `启动模拟请求.cmd`，不要双击 `.ps1`**：本机 `.ps1` 的默认关联是 Windows 记事本（`AppX…Microsoft.WindowsNotepad`），双击只会用记事本打开、不执行脚本（表现为窗口一闪即退）。`.cmd` 内容全 ASCII，经 `tools\run-server.ps1`、`tools\run-simulator.ps1` 转发，避免 cmd.exe 按控制台代码页误读中文路径。模拟脚本的完整运行记录在 `%TEMP%\log-fusion-simulator.log`。
 
-测试：仓库根目录 `python -m pytest`（用例在 `tests/`，共 210 个，通过类级 patch 禁用 `Engine.connect/begin` 并把连接参数指向不可用占位值，**不连接任何数据库**）。无 lint / typecheck 配置。注意 `tests/test_archive.py`（21 个用例）用 `tmp_path`，而 pytest 以 `mode=0o700` 创建临时目录——在受限沙箱里这个模式会让目录**连创建者都无法删除**，于是 13 个用例报 ERROR（其余 197 个用例不受影响）。需要全绿时用完全权限跑（实测完全权限下 210 个全部通过）。
+测试：仓库根目录 `python -m pytest`（用例在 `tests/`，共 251 个，通过类级 patch 禁用 `Engine.connect/begin` 并把连接参数指向不可用占位值，**不连接任何数据库**）。无 lint / typecheck 配置。注意 `tests/test_archive.py`（21 个用例）用 `tmp_path`，而 pytest 以 `mode=0o700` 创建临时目录——在受限沙箱里这个模式会让目录**连创建者都无法删除**，于是 13 个用例报 ERROR（其余 238 个用例不受影响）。需要全绿时用完全权限跑（实测完全权限下 251 个全部通过）。
 
 **图表改动后必须跑两个不依赖浏览器的自检**（真实 `app.js` + 真实 `frontend/vendor` ECharts 服务端渲染）：
 
@@ -46,6 +46,7 @@ node tools\chart-render-check.cjs --live=http://127.0.0.1:8080   # 再用真实�
 - **心跳已持久化**到 `log_fusion.client_status`，启动时 `create_all` 自动建表；`log_fusion` 库不存在则建表失败只记日志、应用照常启动，但 `POST /api/v1/heartbeat` 返回 503。状态阈值 10s 在线 / 30s 延迟 / 其余离线，后台 watchdog 每 5s 重算并广播。
 - **实时通道只有 WebSocket，且仍是进程内存**：连接集合（`ws.py`）不跨进程。**必须单 worker**，多 worker 会导致 WS 广播不完整、watchdog 重复。SSE 已于 2026-10-13 整体移除（ADR-015）：新增实时数据类型必须挂在 WebSocket 上并带 `type` 字段（现有快照视为 `snapshot`），消费方要能忽略未知类型，**不要重新引入 SSE**。
 - 写入/表缺失不报错给客户端：`POST /api/v1/logs/{platform}` 无论解析失败还是入库失败都返回 200，用 `persisted` 和 `errors[].stage` 区分——`parse`（解析失败）、`insert`（业务表写入失败）、`hash`（存证跳过或失败，`log` 缺失时会出现，**不影响入库**）。存证接口不再吞错：`/api/v1/evidence*` 读 `log_hash` 库，查询失败返回 **503**，只有成功且 `total=0` 才是「真的没有存证」。排查「没数据」先看 `/health` 的 `databases` 与响应里的这些字段。
+- **存证原文按平台取不同字段，两侧语义不等价**：Linux 用载荷里的 `log` 字段原文；Windows 的 winlog 载荷**没有 `log`**，`hashing.evidence_input` 改用整条记录的**规范化 JSON**（`sort_keys` + 紧凑分隔符 + `ensure_ascii=False`）。改任一侧的取字段规则、JSON 序列化参数或时间戳优先级（`WINDOWS_TIMESTAMP_KEYS` 必须与 `parsers.normalize_windows` 同序），都会让**已写入的全部对应平台存证被 `EVIDENCE_VERIFY_SQL` 判成 `HASH_MISMATCH`**——问题不在新数据，而是历史数据瞬间"看起来被篡改"。该分支加入之前 Windows 日志是逐条静默跳过存证的（2026-10-15 核验：441,408 行 Windows 业务数据对应 0 条存证），所以「日志总量 ≫ 存证总量」在历史上属正常，修复后 Windows 侧应当逐条收敛。
 - **采集解析层是 `backend/app/parsers.py`**（参考只读的 `旧后端/log-backend/src/main/python/`）。最容易踩的坑都在这四个数字上：时间必须先转 UTC `datetime`（MySQL 不接受 `2026-10-02T09:31:59Z`、`2026-10-02 20:03:18 +0800`，否则 **1292**）；整型列空值写 `NULL` 而不是 `""`（否则 **1366**）；字符串按列宽截断（否则 **1406**）；行字段必须按 `catalog.LINUX_TABLE_FIELDS` / `WINDOWS_TABLE_FIELDS` 裁剪（否则 **1054**）。
 - **浏览器同源连接上限是 6 条（HTTP/1.1）**：前端每个页面只保留 1 条 WebSocket（不占 HTTP 连接额度），REST 请求因此不会被长连接挤掉。历史教训：早期版本每页还额外开 1 条日志 SSE，刷新与多标签会让 SSE 累积到 6 条（旧的 `/health` `realtime.sse_clients` 曾达到 6），所有 REST 请求（含自动刷新）随之永久排队——现象是页面刷新一直转圈、心跳页无数据，而服务端毫秒级返回。`app.js` 不使用 `EventSource`（ADR-012），并在 `pagehide` 断开 WebSocket、给 fetch 加 8 秒超时；SSE 接口已整体移除（ADR-015）。
 - Linux 表名 = 分类名（7 个，`app/catalog.py`），Windows 表名 = `{channel}_logs`；`services.query_category` 只校验分类名是否为 ASCII 字母/数字/下划线，**不**校验是否属于 catalog。Linux 表**列不齐**：`hostname`/`source_address` 部分表没有，关键词查询与 `/api/v1/logs/recent` 必须按表适配（见 `docs/DATABASE.md` §4.3）。

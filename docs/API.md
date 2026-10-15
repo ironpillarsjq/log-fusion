@@ -360,6 +360,9 @@ Windows 旧字段兼容示例：
 ]
 ```
 
+> 注意这种载荷**没有 `log` 字段**：它会被整条规范化为 JSON 后作为存证原文（见 §5「原始日志存证」）。
+> 2026-10-15 之前 Windows 记录因缺 `log` 被逐条跳过存证，是「日志总量远大于存证总数」的主因。
+
 成功或降级响应均为 HTTP 200，并按“解析”“入库”“存证”分别给出计数：
 
 ```json
@@ -390,10 +393,17 @@ Windows 旧字段兼容示例：
 
 在写入业务表之后、返回响应之前，接口会为每条记录写一条 `log_hash.log_hash` 存证行（见 `docs/DATABASE.md` §3.2）：
 
-- 摘要定义：`sha256( timestamp原始字符串 + 0x1F + log原始字符串 )`，小写十六进制 64 位。
-- 两个字段都取请求里的**原始值**，不 trim、不归一化、不转义；`log` 中的控制字符（如 auditd 的 `0x1D`）按原始字节参与哈希。
-- `log_hash` 列有唯一索引：同一 `(timestamp, log)` 重复上报只留一条存证，按幂等成功计入 `hashed`。
-- 记录缺少 `log` 字段或内容为空时**跳过存证**，追加一条 `errors[].stage = "hash"`，日志本身仍正常入库。
+- 摘要定义：`sha256( 原始时间戳字符串 + 0x1F + 存证原文 )`，小写十六进制 64 位。
+- **存证原文按平台取不同字段**：Linux 用请求里的 `log` 字段；Windows 的 winlog 载荷没有
+  `log`，改用**整条记录的规范化 JSON**（键排序、紧凑分隔符、非 ASCII 不转义）。
+- 时间戳取值：Linux 用 `timestamp`；Windows 按 `TimeGenerated` → `TimeWritten` → `event_time`
+  → `timestamp` → `date` 取第一个非空值（与 `normalize_windows` 同序）。
+- 参与哈希的都是**未经业务加工**的取值，不 trim、不做大小写转换；Linux `log` 中的控制字符
+  （如 auditd 的 `0x1D`）按原始字节参与哈希。Windows 侧的规范化序列化是一次已知加工，
+  因此其存证语义与 Linux 不完全等价，详见 `docs/DATABASE.md` §3.2 的边界说明。
+- `log_hash` 列有唯一索引：同一 `(时间戳, 原文)` 重复上报只留一条存证，按幂等成功计入 `hashed`。
+- 存证原文为空时（Linux 缺 `log`、Windows 为空对象）**跳过存证**，追加一条
+  `errors[].stage = "hash"`，日志本身仍正常入库。
 - 存证库写入失败时逐行定位并记入 `errors[].stage = "hash"`；**已入库的业务日志不会被回滚**。
 
 ## 6. 心跳监控接口

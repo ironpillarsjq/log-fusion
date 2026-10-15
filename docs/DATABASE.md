@@ -81,16 +81,16 @@ watchdog 每 5 秒读取全表并在状态变化时提交。API 响应还会根�
 
 ### 3.2 `log_hash.log_hash`（2026-10-11 新增）
 
-原始日志存证表。每条采集记录在写入业务表之前，先按 `sha256(timestamp + 0x1F + log)` 计算摘要，并把 `log` 原文与摘要一起保存，用于事后防篡改校验。可复现 DDL 见 [`docs/sql/log_hash.sql`](./sql/log_hash.sql)。
+原始日志存证表。每条采集记录在写入业务表之前，先按 `sha256(timestamp + 0x1F + 存证原文)` 计算摘要，并把存证原文与摘要一起保存，用于事后防篡改校验。**存证原文按平台不同**：Linux 取采集 JSON 的 `log` 字段，Windows 取整条记录的规范化 JSON（见下方「哈希输入定义」）。可复现 DDL 见 [`docs/sql/log_hash.sql`](./sql/log_hash.sql)。
 
 | 字段 | SQLAlchemy 声明 | 空值 | 约束/索引 | 用途 |
 |---|---|---|---|---|
 | `id` | `BIGINT` | 否 | 主键、自增 | 内部记录 ID |
-| `log_hash` | `VARCHAR(64)` | 否 | **唯一**、索引 | `sha256(timestamp + 0x1F + log)` 的小写十六进制摘要 |
-| `raw_log` | `LONGTEXT` | 否 | 无 | 原始日志正文，取自采集 JSON 的 `log` 字段 |
+| `log_hash` | `VARCHAR(64)` | 否 | **唯一**、索引 | `sha256(timestamp + 0x1F + 存证原文)` 的小写十六进制摘要 |
+| `raw_log` | `LONGTEXT` | 否 | 无 | 存证原文：Linux = 采集 JSON 的 `log` 字段原文；Windows = 整条记录的规范化 JSON |
 | `log_timestamp` | `VARCHAR(64)` | 是 | 无 | **参与哈希的原始时间字符串**，不做归一化，供复算 |
 | `platform` | `VARCHAR(16)` | 是 | 无 | `linux` / `windows` |
-| `source` | `VARCHAR(255)` | 是 | 无 | 采集来源，如 `ubuntu-audit` |
+| `source` | `VARCHAR(255)` | 是 | 无 | 采集来源，如 `ubuntu-audit`；Windows 载荷无 `source` 时回退用 `SourceName`（Provider 名） |
 | `client_id` | `VARCHAR(128)` | 是 | 索引 | 上报客户端标识 |
 | `event_time` | `DATETIME` | 是 | 索引 | 解析后的 UTC 时间，仅用于查询排序，**不参与哈希** |
 | `created_at` | `DATETIME` | 否 | 服务端默认 `NOW()` | 服务端入库时间 |
@@ -103,28 +103,57 @@ watchdog 每 5 秒读取全表并在状态变化时提交。API 响应还会根�
 #### 哈希输入定义（存证可复算的前提）
 
 ```
-log_hash = sha256_hex( timestamp原始字符串 + "\x1f" + log原始字符串 )
+存证原文 = Linux: record["log"] 原文
+           Windows: canonical_json(record)   # sort_keys + 紧凑分隔符 + ensure_ascii=False
+log_hash = sha256_hex( 原始时间戳字符串 + "\x1f" + 存证原文 )
 ```
 
-- 两个字段都取采集端发来的**原始值**：不 trim、不归一化、不做大小写转换、不转义。
+- 原始时间戳的取值：Linux 用 `timestamp`；Windows 按 `TimeGenerated` → `TimeWritten` →
+  `event_time` → `timestamp` → `date` 的优先级取第一个非空值，**顺序与
+  `parsers.normalize_windows` 保持一致**，否则存证时间与业务表时间会来自不同字段。
+- 两个字段都取**未做业务加工**的值：不 trim、不做大小写转换。Windows 侧的"不加工"
+  指的是不再对记录本身做字段挑选或归一化，但**序列化本身是一次加工**（见下条）。
 - 分隔符用 US（`0x1F`，Unit Separator）而不是直接拼接，避免
   `timestamp="...Z" + log="abc"` 与 `timestamp="...Zabc" + log=""` 撞成同一摘要。
-- **`timestamp` 必须参与哈希**：syslog/auditd 里同一台机器在不同时刻产生内容完全相同的行很常见；
-  若只哈希 `log`，这些行会得到同一摘要并被唯一索引吞掉，存证就无法与日志一一对应。
-- **`log` 中的控制字符按原始字节参与哈希**。Linux auditd 的多字段分隔符是 `0x1D`（GS），
+- **时间戳必须参与哈希**：syslog/auditd 里同一台机器在不同时刻产生内容完全相同的行很常见；
+  若只哈希原文，这些行会得到同一摘要并被唯一索引吞掉，存证就无法与日志一一对应。
+  Windows 侧时间戳已包含在规范化 JSON 里，再单独参与哈希是冗余但无害的。
+- **Linux `log` 中的控制字符按原始字节参与哈希**。auditd 的多字段分隔符是 `0x1D`（GS），
   必须按解码后的字节计算，不能先用 `\u001d` 转义再哈希。
 - **`raw_log` 不做列宽裁剪**（`LONGTEXT`），否则存证与原文不符，哈希无法复算。
 
+> **两侧存证语义不等价（重要边界）**：Linux 的 `raw_log` 是采集端发来的**字节原文**；
+> Windows 的 `raw_log` 是 FastAPI 反序列化之后再规范化输出的 JSON 文本——键序、空白、
+> 数字字面量与重复键在解析阶段已经定型。所以 Windows 存证证明的是
+> 「服务端收到的这条事件内容未被服务端改动」，**不能**证明「采集端发出的字节流未经中间环节篡改」。
+> 要覆盖后者必须让 winlog 输出自带 `log` 字段（改采集端），已记入 `docs/TODO.md`。
+>
+> 复算**不需要**重新序列化：`raw_log` 列存的就是被哈希的那个字符串本身。
+
 #### 写入与去重语义
 
-- 每条接收到的日志写一条存证，`log_hash` 唯一索引保证**同一 `(timestamp, log)` 重复上报**
+- 每条接收到的日志写一条存证，`log_hash` 唯一索引保证**同一 `(时间戳, 原文)` 重复上报**
   （Fluent Bit 重试）只留一条；唯一键命中按幂等成功处理，不计入失败。
 - 相同内容、不同时间戳的日志会各自成行（摘要不同），业务表与存证表保持一一对应。
-- **`log` 缺失或为空时不写存证**，在采集响应 `errors[]` 里记一条 `stage="hash"`，
-  但**不影响日志入库**：`persisted` 只反映业务表结果。
+- **存证原文为空时不写存证**（Linux 缺 `log`、Windows 为空对象），在采集响应 `errors[]`
+  里记一条 `stage="hash"`，但**不影响日志入库**：`persisted` 只反映业务表结果。
 - **存证写库失败不影响已入库的日志**：业务表写入先完成，存证独立失败并逐行定位上报。
-- 实测校验（同一 SQL 可在 MySQL 侧复算）：
-  `SHA2(CONCAT(log_timestamp, CHAR(31), raw_log), 256) = log_hash`。
+- 实测校验（同一 SQL 可在 MySQL 侧复算，`IFNULL` 与写入端 `raw_text(None)==""` 对齐）：
+  `SHA2(CONCAT(IFNULL(log_timestamp,''), CHAR(31), raw_log), 256) = log_hash`。
+
+#### 存证覆盖率的历史基线（2026-10-15 只读核验）
+
+「日志总量」与「存证总数」在 2026-10-15 之前**本来就不该相等**，差额 670,693 条由两部分构成：
+
+| 来源 | 条数 | 能否补齐 |
+|---|---|---|
+| Windows 全部日志（载荷无 `log` 字段，逐条被跳过） | 441,408 | 已修复写入端，**存量无法补**（原文未保存） |
+| Linux 早于存证功能上线（2026-10-11 15:19）批量导入的历史 | 约 229,285 | 无法补，除非重放 `旧后端/` 的导入源文件 |
+
+修复后 Windows 新数据开始正常存证；按 `event_time` 逐日对照，Linux 侧 2026-10-13 的覆盖率为 100%
+（8,597/8,597），说明 Linux 链路本身没有漏。2026-10-12 那 233 条无存证的 Linux 记录是当日
+21:31 手动归档删除所致（台账 `archive_log` #1），CSV 仍在 `data/archive/`，可用
+`tools/restore_archive.py` 回灌，不是丢失。
 
 ### 3.3 `log_fusion.archive_log`（2026-10-11 新增）
 

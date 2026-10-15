@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### Fixed — 2026-10-15（Windows 日志全部无存证，导致存证总量远小于日志总量）
+
+- 现象：日志总量 713,395，完整性存证只有 42,702，且存证表 `platform='windows'` 为 **0 条**。
+- 根因：`hashing.build_evidence_row` 只认载荷里的 `log` 字段，而 Fluent Bit winlog 载荷没有 `log`（只有 `TimeGenerated`/`EventID`/`Channel`/`Data`），于是每条 Windows 日志都命中「缺少 log 字段」分支被**静默跳过存证**——日志照常入库、接口照常返回 200，只有 `errors[].stage="hash"` 计数，无人查看。441,408 行 Windows 业务数据全部如此，占缺口 65.8%。
+- 修复：`hashing.py` 新增 `canonical_json()` 与 `evidence_input()`，按平台分流取存证原文——Linux 继续用 `log` 原文（保持不变，已有 42,702 条存证的摘要不受影响），Windows 改用整条记录的规范化 JSON（键排序 + 紧凑分隔符 + 非 ASCII 不转义）；时间戳按 `TimeGenerated` → `TimeWritten` → `event_time` → `timestamp` → `date` 取原始字符串，优先级与 `parsers.normalize_windows` 一致。`source` 列对 Windows 回退取 `SourceName`，避免台账「来源」全空。
+- 校验端 **无需改动**：`raw_log` 存的就是被哈希的字符串本身，`EVIDENCE_VERIFY_SQL` 的 `SHA2(CONCAT(IFNULL(log_timestamp,''), CHAR(31), raw_log), 256)` 原样适用。
+- 已知边界：Windows 的 `raw_log` 是服务端反序列化后规范化的形态，不是采集端字节流，因此其存证证明「服务端收到的事件内容」而非「采集端到服务端的传输未被篡改」。要覆盖后者需改采集端输出带 `log`，已登记 `docs/TODO.md`。
+- 存量：2026-10-15 之前入库的 Windows 日志未保存原文，**无法补建存证**；经确认按「只修往后」处理。Linux 侧另有约 229,285 行早于存证功能（2026-10-11 15:19）上线的历史数据同样无存证——因此两个指标短期内仍不会相等。
+- 测试：`tests/test_hashing.py` 新增 11 个 Windows 用例（规范化 JSON 稳定性、键序无关、非 ASCII 不转义、任一字段变更都改变摘要、时间戳优先级、空对象跳过、与校验端 SQL 复算口径对齐、`source` 回退、Linux 口径不得放宽），全套 **251 个用例通过**；既有 240 个用例一字未改。
+- 文档：`docs/DATABASE.md` §3.2（哈希输入定义 + 覆盖率历史基线）、`docs/API.md` §5 与 Windows 样例、`docs/ARCHITECTURE.md`、`docs/README.md`、`AGENTS.md`（含测试数 210 → 251 的过期修正）、`docs/DECISIONS.md` 新增 **ADR-018**、`docs/TODO.md`。
+
 ### Documentation — 2026-10-14（统一日志编码）
 
 - 明确日志从采集、JSON/JSONL、HTTP 到前端展示统一使用 UTF-8；数据库连接对应 `utf8mb4`，既有表/列字符集仍需实测核验。
