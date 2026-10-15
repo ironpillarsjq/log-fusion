@@ -160,3 +160,114 @@ def test_empty_timestamp_and_null_timestamp_are_the_same_hash():
     row_none, _ = hashing.build_evidence_row("linux", {"log": "x"})
     row_empty, _ = hashing.build_evidence_row("linux", {"log": "x", "timestamp": ""})
     assert row_none["log_hash"] == row_empty["log_hash"]
+
+
+# --- Windows 存证原文：整条记录的规范化 JSON ------------------------------------
+# 背景：winlog 载荷没有 `log` 字段，早期实现因此对**每一条** Windows 日志跳过存证，
+# 造成「日志 71 万条、存证 4 万条」且 windows=0。下列用例锁住修复后的口径。
+
+REAL_WINDOWS_RECORD = {
+    "client_id": "WIN-4R3U3FDFLP6",
+    "TimeGenerated": "2026-10-15T02:36:33.000000Z",
+    "EventID": "4672",
+    "RecordNumber": 123456,
+    "Channel": "Security",
+    "SourceName": "Microsoft-Windows-Security-Auditing",
+    "Computer": "WIN-4R3U3FDFLP6",
+    "Data": ["Special Logon", "S-1-5-21-1"],
+    "Message": "",
+}
+
+
+def test_windows_record_without_log_field_still_gets_evidence():
+    assert "log" not in REAL_WINDOWS_RECORD
+    row, error = hashing.build_evidence_row("windows", REAL_WINDOWS_RECORD)
+    assert error is None
+    assert row["platform"] == "windows"
+    assert row["raw_log"] == hashing.canonical_json(REAL_WINDOWS_RECORD)
+    assert row["log_hash"] == _expected(REAL_WINDOWS_RECORD["TimeGenerated"], row["raw_log"])
+
+
+def test_canonical_json_is_key_order_and_whitespace_independent():
+    """字段顺序与缩进不得改变摘要：Fluent Bit 输出顺序不稳定，规范化必须吸收它。"""
+    import json as _json
+
+    reordered = _json.loads(_json.dumps(dict(reversed(list(REAL_WINDOWS_RECORD.items())))))
+    assert hashing.canonical_json(reordered) == hashing.canonical_json(REAL_WINDOWS_RECORD)
+    packed = hashing.canonical_json(REAL_WINDOWS_RECORD)
+    assert ": " not in packed and ", " not in packed  # 紧凑分隔符，不留格式化空白
+
+
+def test_canonical_json_keeps_non_ascii_verbatim():
+    """中文不转义成 \\uXXXX：存证原文要可读，且哈希覆盖真实 UTF-8 字节。"""
+    packed = hashing.canonical_json({"Message": "登录成功", "EventID": "4624"})
+    assert "登录成功" in packed
+    assert "\\u" not in packed
+
+
+def test_any_field_change_changes_the_hash():
+    """规范化 JSON 覆盖整条记录：任一字段被改动都必须体现为摘要变化。"""
+    base = hashing.build_evidence_row("windows", REAL_WINDOWS_RECORD)[0]["log_hash"]
+    for field, value in (("EventID", "4625"), ("RecordNumber", 999), ("Channel", "System"),
+                         ("Data", ["Tampered"]), ("client_id", "evil-host")):
+        assert hashing.build_evidence_row("windows", dict(REAL_WINDOWS_RECORD, **{field: value}))[0]["log_hash"] != base, field
+
+
+def test_windows_timestamp_priority_matches_parser_field_order():
+    """时间戳取值优先级必须与 `normalize_windows` 一致，且跳过空值。"""
+    assert hashing.WINDOWS_TIMESTAMP_KEYS == ("TimeGenerated", "TimeWritten", "event_time", "timestamp", "date")
+    row, _ = hashing.build_evidence_row("windows", {"TimeGenerated": "", "TimeWritten": "2026-10-15T02:00:00Z",
+                                                    "EventID": "7036"})
+    assert row["log_timestamp"] == "2026-10-15T02:00:00Z"
+    row, _ = hashing.build_evidence_row("windows", {"date": 1791938979, "EventID": "7036"})
+    assert row["log_timestamp"] == "1791938979"
+
+
+def test_windows_row_round_trips_and_detects_tampering():
+    row, _ = hashing.build_evidence_row("windows", REAL_WINDOWS_RECORD)
+    assert hashing.verify_log_hash(row) is True
+    assert hashing.verify_log_hash(dict(row, raw_log=row["raw_log"].replace("4672", "4624"))) is False
+
+
+def test_windows_evidence_matches_sql_recompute_expression():
+    """与校验端 `main.EVIDENCE_VERIFY_SQL` 的复算口径对齐。
+
+    SQL 侧是 `SHA2(CONCAT(IFNULL(log_timestamp,''), CHAR(31), raw_log), 256)`，
+    这里用同一表达式在 Python 里复算一遍——任一端改规则都会让全部 Windows 存证
+    被误判成 HASH_MISMATCH。
+    """
+    import hashlib
+
+    row, _ = hashing.build_evidence_row("windows", REAL_WINDOWS_RECORD)
+    payload = (row["log_timestamp"] or "") + hashing.HASH_FIELD_SEPARATOR + row["raw_log"]
+    assert hashlib.sha256(payload.encode("utf-8")).hexdigest() == row["log_hash"]
+
+
+def test_windows_evidence_falls_back_to_provider_name():
+    """winlog 没有 Linux 那样的 `source`，用 SourceName 占位，避免台账「来源」全空。"""
+    row, _ = hashing.build_evidence_row("windows", REAL_WINDOWS_RECORD)
+    assert row["source"] == "Microsoft-Windows-Security-Auditing"
+    explicit, _ = hashing.build_evidence_row("windows", dict(REAL_WINDOWS_RECORD, source="win-agent-1"))
+    assert explicit["source"] == "win-agent-1"
+
+
+def test_windows_ignores_log_field_and_hashes_whole_record():
+    """即使载荷里出现了 `log`，Windows 仍按整条记录存证——口径不能随字段有无而漂移。"""
+    with_log = dict(REAL_WINDOWS_RECORD, log="ignored")
+    assert hashing.build_evidence_row("windows", with_log)[0]["raw_log"] == \
+        hashing.canonical_json(with_log)
+
+
+def test_windows_empty_record_skips_evidence():
+    """空对象没有任何内容可存证，跳过而不是写入 `{}` 这种无意义摘要。"""
+    row, error = hashing.build_evidence_row("windows", {})
+    assert row is None
+    assert error
+
+
+def test_linux_path_still_requires_log_field():
+    """Linux 口径不得因为 Windows 分支的加入而放宽：没有 log 依旧跳过。"""
+    row, error = hashing.build_evidence_row("linux", REAL_WINDOWS_RECORD)
+    assert row is None
+    assert "log" in error
+

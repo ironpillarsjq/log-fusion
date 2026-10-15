@@ -200,3 +200,22 @@
   - 内存开销约 720 × (客户端数) 的小对象，可忽略；
   - 若将来确实需要跨重启保留，再升级为独立历史表（届时需要 DDL 变更与保留策略），本次刻意不做。
 - 后续：可选增强「客户端状态时间线热力图」（client × 时间 的状态色带）已登记在 `TODO.md`。
+
+## ADR-018：Windows 存证原文改用整条记录的规范化 JSON
+
+- 状态：已采用（2026-10-15）
+- 背景：存证写入端只认载荷里的 `log` 字段（`hashing.build_evidence_row`），而 Fluent Bit winlog 载荷根本没有 `log`——只有 `TimeGenerated`/`EventID`/`Channel`/`Data` 这类字段（见 `docs/API.md` 的 Windows 样例）。结果是**每一条** Windows 日志都命中「缺少 log 字段」分支被静默跳过存证，但日志照常入库、接口照常返回 200。2026-10-15 只读核验：业务表合计 713,395 行，存证表 42,702 行且 `platform='windows'` 为 **0**；缺口的 65.8%（441,408 行）来自这里。
+  - ⚠ 排查过程中一度把「`time_created` 最大值是今天」当成「Windows 仍在实时进数据、缺口每秒扩大」，**这个推论是错的**：`time_created` 是事件在源机器上的时间，不是入库时间，而 Windows 业务表没有 `created_at` 列，无法据此判断最后一次实际入库时刻。核验时刻（2026-10-15 14:47）Windows 三张表已无新增，最后一条事件时间为 `2026-10-15 02:41`（UTC）。**「缺口是否仍在扩大」属待确认**，需查采集端或服务端访问日志才能定论。
+- 决策：在 `hashing.evidence_input` 里按平台分流——Linux 继续用 `log` 字段原文（**一字不改**，避免已有的 42,702 条存证被判篡改）；Windows 用 `canonical_json(record)`（`sort_keys=True` + `separators=(",", ":")` + `ensure_ascii=False`）作为存证原文，时间戳按 `WINDOWS_TIMESTAMP_KEYS` 的优先级取原始字符串。
+- 备选与否决：
+  - ① 只用 `Message`/`Data` 当事件正文：最接近 Linux 的 `log` 语义，但 4672/4624 这类高频事件的 `Message` 常为空或只有参数，会把 `EventID`、`Channel`、`Computer` 这些真正有审计价值的字段排除在存证之外——**否决**。
+  - ② 改采集端让 winlog 输出带 `log`：代码零改动且能拿到字节原文，但要改每台客户端的 Fluent Bit 配置并重启，覆盖不到"配置下发不了"的机器，且存量数据仍然没有存证——**作为增强项登记进 `TODO.md`，不作为本次修复**。
+  - ③ 整条 JSON 规范化：覆盖全部字段、不依赖采集端变更、服务端可自洽复算——**采用**。
+- 后果与已知边界：
+  - **两侧存证语义不再等价**。Linux 的 `raw_log` 是采集端字节原文；Windows 的 `raw_log` 是服务端反序列化后重新规范化的文本，键序、空白、数字字面量与重复键在 `json` 解析阶段已定型。所以 Windows 存证证明「服务端收到的这条事件内容未被服务端改动」，**不能**证明「采集端发出的字节流未经中间环节篡改」。这一点必须让使用方知道，已写入 `docs/DATABASE.md` §3.2、`docs/API.md` §5 与页面「算法与策略」区。
+  - 复算不依赖重新序列化：`raw_log` 存的就是被哈希的那个字符串，校验端 `SHA2(CONCAT(IFNULL(log_timestamp,''), CHAR(31), raw_log), 256)` 原样适用，**无需改动 SQL**。
+  - 规范化参数是哈希口径的一部分：改 `sort_keys`/`separators`/`ensure_ascii` 任一项，会让已写入的全部 Windows 存证被判 `HASH_MISMATCH`。已由 `tests/test_hashing.py` 的规范化 JSON 用例与 SQL 复算对齐用例锁住。
+  - `source` 列对 Windows 回退取 `SourceName`（Provider 名），否则存证台账「来源」列对全部 Windows 记录显示为空。
+  - **存量无法补齐**：2026-10-15 之前入库的 441,408 行 Windows 日志没有保存原文，无法事后重算。经用户确认「只修往后」，不做历史重放。
+  - 「日志总量」与「存证总数」仍不会相等（Linux 侧还有约 229,285 行早于存证功能上线的历史数据），两个指标并排展示本身有误导性，已作为待办登记。
+
