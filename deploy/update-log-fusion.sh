@@ -124,6 +124,12 @@ else
   }
   log "代码已更新 ${OLD_HEAD} -> ${NEW_HEAD}"
 
+  # systemd 单元变了不会自动生效，提醒重跑安装脚本（本脚本不替它做主）
+  if ! git -C "$APP_DIR" diff --quiet "$OLD_HEAD" "$NEW_HEAD" -- deploy/log-fusion.service; then
+    log "提示：deploy/log-fusion.service 在本次更新中有变化，" \
+        "请重跑 sudo bash $APP_DIR/deploy/install-service.sh 同步单元"
+  fi
+
   # 5) 重装依赖（幂等；requirements.txt 有变化时才真去装）
   if [ -x "$VENV_DIR/bin/pip" ] && [ -f "$REQUIREMENTS" ]; then
     if git -C "$APP_DIR" diff --quiet "$OLD_HEAD" "$NEW_HEAD" -- requirements.txt; then

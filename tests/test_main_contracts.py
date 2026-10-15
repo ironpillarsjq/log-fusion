@@ -802,3 +802,20 @@ def test_gitignore_protects_runtime_files_from_update():
     }
     for pattern in (".venv/", ".env", "data/", "backend/data/"):
         assert pattern in entries, f".gitignore 缺少 {pattern}，原地更新会覆盖它"
+
+
+def test_service_unit_installer_and_updater_agree_on_unit_name():
+    """单元文件、安装脚本、更新脚本三者的服务名必须一致。
+
+    更新脚本靠 `systemctl stop $SERVICE_NAME` 停服；名字和实际安装的单元对不上时
+    `systemctl stop` 只是「停不到任何东西」，属于静默失败，所以在这里锁死。
+    """
+    deploy_dir = main._UPDATE_SCRIPT_SRC.parent
+    unit = deploy_dir / "log-fusion.service"
+    installer = deploy_dir / "install-service.sh"
+    assert unit.is_file(), f"缺少 systemd 单元：{unit}"
+    assert installer.is_file(), f"缺少服务安装脚本：{installer}"
+    assert installer.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
+    assert 'UNIT_NAME="log-fusion"' in installer.read_text(encoding="utf-8")
+    assert 'SERVICE_NAME="log-fusion"' in main._UPDATE_SCRIPT_SRC.read_text(encoding="utf-8")
+    assert main._UPDATE_UNIT == "log-fusion-update"

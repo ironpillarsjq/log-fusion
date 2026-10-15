@@ -1,7 +1,7 @@
 # 服务器部署与更新
 
 > 面向在 Linux 服务器上以 systemd 运行 log-fusion、并需要在页面上「一键拉取最新代码」的场景。
-> 相关文件：`deploy/log-fusion.service`、`deploy/update-log-fusion.sh`、接口 `POST /api/v1/admin/update`。
+> 相关文件：`deploy/log-fusion.service`、`deploy/install-service.sh`（注册服务）、`deploy/update-log-fusion.sh`（更新代码）、接口 `POST /api/v1/admin/update`。
 
 ## 1. 目录约定
 
@@ -36,13 +36,14 @@ DB_USER=root
 DB_PASSWORD=改成你的密码
 EOF
 
-# 4) 安装并启动 systemd 单元
-sudo cp deploy/log-fusion.service /etc/systemd/system/log-fusion.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now log-fusion
+# 4) 安装并启动 systemd 单元（脚本会做校验、daemon-reload、enable、restart 与 /health 自检）
+sudo bash deploy/install-service.sh
 systemctl status log-fusion
-curl -fsS http://127.0.0.1:8080/health
 ```
+
+`deploy/install-service.sh` 是**幂等**的：单元没变时等于 `daemon-reload` + 重启；内容有变化时先把旧文件备份成
+`/etc/systemd/system/log-fusion.service.bak` 再覆盖。所以以后只要 `deploy/log-fusion.service` 被改过，
+重跑一次它就行——更新脚本检测到该文件在本次更新里有变化时也会打印这条提示。
 
 单元要点（见 `deploy/log-fusion.service`）：
 
@@ -76,7 +77,8 @@ sudo bash /opt/log-fusion/deploy/update-log-fusion.sh
 4. `systemctl stop log-fusion`，等 8080 端口释放；
 5. `git fetch --prune origin main`（带超时兜底），随后 **`git reset --hard origin/main`**，让代码与远端严格一致；
 6. 仅当 `requirements.txt` 在两个版本之间有变化时，才执行 `.venv/bin/pip install -r requirements.txt`；
-7. `systemctl start log-fusion`，最多等 30 秒轮询 `/health` 判定是否恢复。
+7. 若 `deploy/log-fusion.service` 在本次更新里有变化，打印提示让你重跑 `sudo bash deploy/install-service.sh`（脚本不会替你改系统单元）；
+8. `systemctl start log-fusion`，最多等 30 秒轮询 `/health` 判定是否恢复。
 
 并用 `flock` 保证同一时间只有一次更新在跑。
 
@@ -119,6 +121,10 @@ sudo install -m 0755 /opt/log-fusion/deploy/update-log-fusion.sh /usr/local/bin/
 | 报「已有一次更新正在进行」 | 上一次更新还没结束；`systemctl status log-fusion-update` 查看 |
 | 更新后服务没起来 | `journalctl -u log-fusion -n 100`、`tail -n 100 /var/log/log-fusion-update.log` |
 | 更新卡住/失败残留单元 | `systemctl status log-fusion-update`；`sudo systemctl reset-failed log-fusion-update` |
+| 页面点按钮报 500 且提到 systemd | 服务还没注册；先 `sudo bash /opt/log-fusion/deploy/install-service.sh` |
+| 安装脚本报「8080 已被占用且不是 log-fusion 服务」 | 手工启动的 `run.py` 还挂在 SSH 前台；先 Ctrl+C 或 `pkill -f 'run.py'` 再重跑安装脚本 |
+| 安装脚本报「未找到可执行的 /opt/log-fusion/.venv/bin/python」 | 虚拟环境没建或路径不对；按 §2 第 2 步建好再装单元 |
+| 提示 `deploy/log-fusion.service` 有变化 | 单元文件改了但系统里还是旧的；重跑 `sudo bash deploy/install-service.sh` 同步 |
 | 消息里说「检测到未提交的已跟踪改动」 | 服务器被人直接改过代码；那次改动已备份到 `/root/lf-keep/pre-update-*.patch`，需要时 `git apply` 还原 |
 | 服务器本地提交/历史与远端不一致 | 脚本用 `reset --hard origin/main` 强制对齐，不做合并；只要确认能连上 GitHub 且分支名正确即可 |
 | 想确认服务是否恢复 | `curl -fsS http://127.0.0.1:8080/health` |

@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+### Added — 2026-10-16（systemd 服务安装脚本，注册服务不再只有手工命令）
+
+- 新增 `deploy/install-service.sh`：把 `deploy/log-fusion.service` 安装到 `/etc/systemd/system/` 并 `daemon-reload` + `enable` + `restart` + 30 秒 `/health` 自检。**幂等**，可重复执行；单元内容有变化时先把旧文件备份成 `.bak` 再覆盖。执行前校验 root、`systemctl`、单元文件、`.venv/bin/python` 可执行、`backend/.env` 是否存在，并在 8080 被「非本服务的进程」占用时明确提示先停掉挂在 SSH 前台的 `run.py`。
+- `deploy/update-log-fusion.sh`：更新后若 `deploy/log-fusion.service` 在本次版本区间内有变化，打印「请重跑 install-service.sh」提示（脚本不替你改系统单元）；`systemctl start` 返回非零时改为继续等 `/health` 并给出排查线索，`git reset --hard` 失败时会先拉起服务再中止。
+- 新增契约测试：`log-fusion.service` / `install-service.sh` / `update-log-fusion.sh` 三处的服务名必须一致（对不上时 `systemctl stop` 属于静默失败），用例数 259 → 260。
+- `docs/DEPLOY.md`：§2 第 4 步改用安装脚本并说明其幂等性；§3 补充「单元变化」步骤；§5 排查表新增 4 行。
+- 无实际数据库结构变化，无实际接口行为变化。
+
 ### Added — 2026-10-15（服务端一键更新：systemd 单元 + 更新接口 + 前端按钮）
 
 - 新增 `deploy/log-fusion.service`：把服务注册成 systemd 单元（`WorkingDirectory=/opt/log-fusion/backend`、`PYTHONPATH` 指向 backend、`ExecStart=<venv>/python run.py`、`Restart=always`、`KillSignal=SIGINT`），从此用 `systemctl start/stop/restart log-fusion` 管理，不再需要挂 SSH 前台终端。
