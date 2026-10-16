@@ -45,6 +45,9 @@
 | POST | `/api/v1/archive/manual` | JSON | 手动归档：导出区间存证后删除 |
 | POST | `/api/v1/archive/auto` | JSON | 立即执行一次自动归档 |
 | GET | `/api/v1/archive/log` | JSON | 归档台账列表 |
+| GET | `/api/v1/security/summary` | JSON | 三类安全日志实际入库数、断点和采集开关 |
+| GET | `/api/v1/security/logs/{log_type}` | JSON | 安全日志 ID 游标分页 |
+| GET | `/api/v1/security/logs/{log_type}/{record_id}` | JSON | 完整原始日志 JSON |
 | POST | `/api/v1/admin/update` | JSON | 触发服务端代码更新（停服 → 原地 git 更新 → 重启） |
 
 ## 3. 页面与健康接口
@@ -817,3 +820,15 @@ Windows 旧字段兼容示例：
 - 完整的原始日志写入、SHA-256 生成和原文读取。
 
 调用这些未实现路径通常得到 HTTP 404。后续实现时必须以新代码和本文件为准，不得直接把遗留示例视为现有兼容承诺。
+
+## 安全产品日志查询（2026-10-16）
+
+三个接口均只读，成功使用 `{code:0,message:"ok",data:...}`。数据库/表不可用返回 503，不能当作空结果。允许的 `log_type` 只有 `ipslog`、`ipblacklistlog`、`ips_web_secure_event_log`，其余返回 422，不能用于探测任意表。
+
+- `GET /api/v1/security/summary`：无参数；`data` 包含 `sourceInstance`、`enabled`、`collectorActive`（数据库会话锁是否被工作进程持有）、`pollSeconds`、`overlapSeconds`、`lagSeconds`、`collectionMode:"live_only"`、`liveWindowSeconds`、`generatedAt` 和 `types`。每类含 type/label/table/initialized/rows、history/live 状态、pending 时间范围、checked_until Unix 秒、error/retry_at/last_success。`rows` 由窗口事务维护，代表本实例已写入唯一记录数；不是上游总量。历史 `expected` 仅是最初整段查询的参考值，可为 null。手工修改表后需要单独核对计数；不要把故障和未初始化显示成真实零行。
+- `GET /api/v1/security/logs/{log_type}`：`limit` 默认 30、1..100；可选 `before` 为正整数，按 `id < before ORDER BY id DESC` 返回。`data={type,order:"id_desc",items:[...],nextBefore}`。items 含 id/event_time（UTC ISO Z）/sip/dip/sport/dport/ruleid/threat_type/log_id；nextBefore=null 表示当前无下一页。补录期间顺序是入库顺序，不能当作事件时间排序。无 OFFSET 深分页或每页全表 COUNT。
+- `GET /api/v1/security/logs/{log_type}/{record_id}`：正整数记录 ID；返回原始 `{index,source}`。不存在返回 404，非正 ID 返回 422。原始内容仅作为文本渲染。
+
+WebSocket 仍为 `/ws/client-monitor`，新增通知 `{type:"security_logs",logType:"ipslog",mode:"history",rows:123,status:"running"}`（错误通知可只含 logType/status）。它是刷新提示，不包含逐条日志。旧快照无 type 或 type=snapshot 时继续更新心跳；未知类型忽略。CLI 导入不广播，页面 10 秒轮询会显示变化。
+
+安全摘要状态补充（仅实时策略）：后台不再继续历史任务，旧未完成 history.status 为 stopped（保留 pending 供显式手动使用，不表示仍会执行），新实例不建历史任务、状态为 disabled；已完成历史仍为 complete。每次启动重设 live.since 和 checked_until 到近期起点，清空旧 live.pending；collection_mode=live_only。接口路径和既有字段保留，只增加 collectionMode/liveWindowSeconds 及上述状态含义，无新增路由。

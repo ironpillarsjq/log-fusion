@@ -38,6 +38,7 @@ flowchart LR
 | 组件 | 职责 | 状态边界 |
 |---|---|---|
 | `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证列表/导出、归档接口、服务端更新触发接口、心跳 upsert、WebSocket、生命周期巡检与每日自动归档任务 | 应用主入口 |
+| `backend/app/security_logs.py` | 绿盟日志归一化、MySQL 身份去重/冲突检测、持久化补录/增量队列、会话锁、游标查询 | 后台默认开启，仅实时；显式历史 CLI 可续跑；DDL 与字段字典在 security-log-client/sql |
 | `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置与归档策略（目录、保留月数、单批上限） | `get_settings()` 进程内缓存 |
 | `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
 | `backend/app/models.py` | 声明 `ClientStatus`、`LogHash`、`ArchiveLog` ORM 模型 | 覆盖平台心跳表、存证表与归档台账 |
@@ -55,7 +56,7 @@ flowchart LR
 | `deploy/install-service.sh` | 把上面的单元安装到 `/etc/systemd/system/`，做前置校验、`enable`、`restart` 与 `/health` 自检 | 一次性且幂等；单元改了重跑即可（服务名一致性由测试锁定） |
 | `deploy/update-log-fusion.sh` | 服务端一键更新：停服 → 备份未提交改动 → `git fetch` + `git reset --hard origin/main` → 按需装依赖 → 重启 → `/health` 自检 | 由 `/api/v1/admin/update` 经 `systemd-run` 以独立单元执行；运行期文件靠 `.gitignore` 保护（ADR-020） |
 | `backend/simulator/...` | 读取外部样例并发送心跳及两类日志 | 开发联调工具 |
-| `security-log-client/` | 独立安全产品 API 项目：`nsfocus_api.py` 认证与分页、`nsfocus_log_search.py` 单页预览、`analyze_samples.py` 离线分析、`probe_log_types.py` 逐类探测并保存样例；使用及接口文档在项目内 | 与 backend/ 同级；真实配置位于 config/，样例/历史记录位于 data/，分析位于 reports/，不接入应用和数据库 |
+| `security-log-client/` | 独立安全产品 API 项目：`nsfocus_api.py` 认证与分页、`nsfocus_log_search.py` 单页预览、`analyze_samples.py` 离线分析、`probe_log_types.py` 逐类探测并保存样例；使用及接口文档在项目内 | 与 backend/ 同级；真实配置位于 config/，样例/历史记录位于 data/，分析位于 reports/，通过 backend/app/security_logs.py 接入应用和 log_fusion，真实配置/响应不提交 |
 
 `frontend/index.html` 与 `frontend/styles.css` 当前未被根路由使用；`/static` 挂载使它们可被直接访问，但不是现行页面入口。
 
@@ -281,3 +282,11 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 13. 时间桶查询依赖 `event_time`/`time_created` 上的索引：2026-10-13 只读核验确认 12 张表都已有 `idx_event_time`/`idx_time_created`，因此当前查询走索引；新增日志表时必须补同样的索引，否则 30 天窗口会退化成全表扫描。
 
 具体建议和验收口径见 [TODO.md](./TODO.md)。
+
+## 安全产品日志链路（2026-10-16）
+
+默认启用 `SECURITY_SYNC_ENABLED` 后 lifespan 创建 `_security_sync_loop`，用 `asyncio.to_thread` 执行有界同步请求，避免阻塞事件循环。新表由显式迁移 CLI 创建，不加入现有 `Base.metadata.create_all()`。后台启动先 initialize_live，仅三类实时轮转，不调用历史 initialize；旧历史窗口保留但未完成状态改为 stopped；每个时间窗口先查计数，必要时二分，再取第一页完整数据。数据库会话锁覆盖 HTTP 和写入，同一事务提交窗口数据及 JSON 断点。退出时等待当前请求/事务收尾。凭据沿用独立项目配置，Token 401 时刷新一次，错误消息不包含凭据或 SQL 参数。
+
+`#/security` 经三个只读接口查看摘要、游标列表和原始详情，每 10 秒刷新；已有 WebSocket 新增 `{type:"security_logs",logType,mode?,rows?,status}` 通知。客户端忽略未知 type，避免把安全日志通知当成心跳快照清空客户端列表。CLI 不发 WS，REST 刷新仍正常。保持单 worker，不引入 SSE。采集开关关闭不影响这些只读 API。
+
+2026-10-16 后续策略变更：backend 的 Worker 固定 live_only=True，第一次初始化实时状态后不再每轮初始化历史。首次范围从 now-lag-overlap 起，旧 live 待处理窗口丢弃；同一进程长时间失败后的窗口裁剪至 now-lag-live_window，旧历史队列始终不参与选取。CLI `run` 默认也仅实时，只有显式 `--history-only` 才调用历史初始化。现有数据不删，历史未完成不伪装成 complete。

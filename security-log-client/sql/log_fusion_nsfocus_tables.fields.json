@@ -1,7 +1,7 @@
 {
   "design_date": "2026-10-16",
   "database": "log_fusion",
-  "status": "design_only_not_executed",
+  "status": "created_2026-10-16_partial_import_stopped_by_user",
   "tables": [
     {
       "table": "nsfocus_ips_log",

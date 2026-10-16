@@ -22,6 +22,17 @@ class Settings(BaseSettings):
     archive_retention_months: int = 3
     # 每次归档最多处理的行数，避免单次把整表拉进内存
     archive_batch_limit: int = 200000
+    # Startup polls recent logs only; historical imports require the explicit CLI.
+    security_sync_enabled: bool = True
+    security_source_instance: str = "nsfocus-site-a"
+    security_config_file: str = "security-log-client/config/connection.json"
+    security_poll_seconds: int = 30
+    security_history_months: int = 3
+    security_page_size: int = 10000
+    security_overlap_seconds: int = 120
+    security_live_window_seconds: int = 600
+    security_lag_seconds: int = 30
+    security_timeout_seconds: int = 90
 
     @property
     def mysql_base(self) -> str:

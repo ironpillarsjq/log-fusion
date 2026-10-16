@@ -91,10 +91,14 @@ python analyze_samples.py data/samples/windows_20261015
 
 当前 [建表 SQL](sql/log_fusion_nsfocus_tables.sql)、[完整字段映射](sql/log_fusion_nsfocus_tables.fields.json) 和 [三类专用表设计说明](docs/LOG_FUSION_TABLES.md) 已提供，含 UTC 时间、去重、索引、入库契约及上线/回滚步骤。旧 [Windows 字段核验及通用方案](docs/DATABASE.md) 仅作历史参考，不与新方案同时执行。
 
-草案未执行；没有数据库导入程序、建库或数据写入。三张表均保存 §3.4.1 日志，不是 §3.5.1 的安全事件表；安全事件仍无真实样例。
+2026-10-16 已实际建表并提供导入程序；用户确认历史量足够，启动仅追加最新数据；剩余历史不再自动续跑，见 docs/SYNC.md。三张表均保存 §3.4.1 日志，不是 §3.5.1 的安全事件表；安全事件仍无真实样例。
 
 ## 迁移说明
 
 两个请求脚本已从主仓库 `tools/` 移到本目录；接口专题文档已从主仓库 `docs/` 移到本项目 `docs/API.md`，历史调试目录已迁入 `data/debug/`。原路径不再作为运行入口。目录及真实配置都在本项目内，复制整个目录即可携带代码、配置和本地数据。
 
 无实际数据库结构变化，无实际接口行为变化。本项目只登录和读取外部安全产品接口、保存文件及离线分析，不导入 Log Fusion。
+
+## 三类日志导入与查看
+
+三张 log_fusion 日志表和同步表已创建。后台默认开启且仅实时；历史窗口保留但不自动执行。实时参数、可选手动历史、查看状态及迁移步骤见 [docs/SYNC.md](docs/SYNC.md)。命令入口 `import_history.py`；页面 `http://127.0.0.1:8080/#/security`。

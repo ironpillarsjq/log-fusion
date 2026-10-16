@@ -1,7 +1,7 @@
--- 设计日期：2026-10-16；目标数据库：log_fusion。尚未执行。
+-- 设计日期：2026-10-16；目标数据库：log_fusion。2026-10-16 已实际执行。
 -- 目标语法 MySQL 8.0+ / InnoDB / utf8mb4 / ROW_FORMAT=DYNAMIC。
 -- 仅创建以下三张新表，不修改 client_status、archive_log 或既有 log_hash。
--- 实际服务器版本、页大小、权限和容量尚未核验；先在空测试环境验证。
+-- 已核验 MySQL 8.4.9 / 16KiB InnoDB 页 / 64MiB max_allowed_packet；长期容量待实测。
 -- 不使用 IF NOT EXISTS：同名表应先核验结构，避免静默跳过不兼容定义。
 -- 原始字段列来自实际 API 样例；IPS/WEB 同时纳入已检查 CSV 的模板列。
 -- 所有列名显式引用，避免 table/time/count/partition/offset 等保留字冲突。

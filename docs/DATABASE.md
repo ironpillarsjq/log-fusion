@@ -4,7 +4,7 @@
 
 ## 1. 数据库划分
 
-独立 `security-log-client/` 项目按用户要求设计在 `log_fusion` 中新增 `nsfocus_ips_log`、`nsfocus_ip_blacklist_log`、`nsfocus_web_security_log` 三张专用表，详见 [三类日志分表设计](../security-log-client/docs/LOG_FUSION_TABLES.md)。**仅为未执行的草案**，尚未出现在本文核验的现有结构中，也未接入当前应用。早期 Windows 字段及通用四表参考保留在 [原字段核验文档](../security-log-client/docs/DATABASE.md)。
+独立 `security-log-client/` 项目按用户要求设计在 `log_fusion` 中新增 `nsfocus_ips_log`、`nsfocus_ip_blacklist_log`、`nsfocus_web_security_log` 三张专用表，详见 [三类日志分表设计](../security-log-client/docs/LOG_FUSION_TABLES.md)。**2026-10-16 已实际创建三张日志表及同步表，接入后台与前端；按用户最新要求启用仅实时采集，已有历史足够，剩余历史不再自动补录，见本文 §11。**早期 Windows 字段及通用四表参考保留在 [原字段核验文档](../security-log-client/docs/DATABASE.md)。
 
 当前应用连接同一 MySQL 服务上的四个逻辑库，并为每个库创建独立同步 SQLAlchemy Engine：
 
@@ -342,3 +342,11 @@ SELECT * FROM audit_log_evidence ORDER BY received_at DESC LIMIT 1000
 6. 应用账号所需的最小权限，以及生产是否允许应用执行 DDL。
 7. 生产环境的归档保留期（当前默认 3 个月）、归档文件存放位置与异地备份要求；
    归档 CSV 目前永久保留，磁盘容量规划待确认。
+
+## 11. 绿盟三类安全日志（2026-10-16 实际新增）
+
+目标是已有 `log_fusion`，实际新增 `nsfocus_ips_log`（118 列）、`nsfocus_ip_blacklist_log`（70 列）、`nsfocus_web_security_log`（92 列）与 `nsfocus_sync_state`（4 列）。实机 MySQL 8.4.9 / 16KiB InnoDB 页 / 64MiB max_allowed_packet，原有三表保留。三张日志表完整 DDL 在 `security-log-client/sql/log_fusion_nsfocus_tables.sql`；断点表 DDL 在 `security-log-client/sql/nsfocus_sync_state.sql`；字段类型事实源在同目录 fields.json。详见 [分表与字段](../security-log-client/docs/LOG_FUSION_TABLES.md) 和 [迁移/续跑/配置](../security-log-client/docs/SYNC.md)。
+
+每条保存全部来源列、完整原始 JSON、UTC 时间和规范化 JSON SHA-256。唯一键 `(source_instance,upstream_index,log_id)`；相同内容跳过，内容冲突失败并保留原条。普通索引覆盖实例+时间/源 IP/目的 IP/规则，黑名单补充域名前缀索引。同步 JSON 队列与对应窗口数据同事务写入；只有提交后前移边界，连接失败不跳过窗口。后台及 CLI 用同一会话锁串行处理。新表独立迁移，不注册进现有 ORM create_all，也不产生现有 log_hash 存证。
+
+迁移顺序：审阅 DDL → CLI migrate 创建缺失表并验证列名/类型/NULL/身份索引 → 手动 run 历史补录 → 由用户选择开启后台。兼容性：不修改原表/采集端协议。回滚：先关闭 SECURITY_SYNC_ENABLED 并重启，回退应用代码，保留新表和断点；不自动删数据。DDL 隐式提交，中断后重跑验证现有表。用户已确认现有导入量足够：停止剩余历史，启动仅采集最新数据。保留已有日志和历史窗口，未完成历史状态改为 stopped，实时状态在每次启动重置为近期起点。无新增 DDL、无数据删除。

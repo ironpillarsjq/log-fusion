@@ -74,8 +74,8 @@ def test_documented_routes_match_application():
 
 
 def test_documented_route_count():
-    """docs/API.md §2 的接口总表当前有 26 条；新增/删除接口时同步更新此断言。"""
-    assert len(_documented_routes()) == 26
+    """docs/API.md §2 的接口总表当前有 29 条；新增/删除接口时同步更新此断言。"""
+    assert len(_documented_routes()) == 29
 
 
 # --- 心跳状态阈值与载荷 -------------------------------------------------------

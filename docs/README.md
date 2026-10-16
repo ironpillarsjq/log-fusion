@@ -51,6 +51,7 @@ log-fusion/
 │   │   ├── config.py           # 环境配置与归档策略
 │   │   ├── db.py               # 四个 MySQL Engine 与会话
 │   │   ├── models.py           # client_status、log_hash、archive_log ORM 模型
+│   │   ├── security_logs.py     # 绿盟三类日志：历史断点/增量采集/去重/查询
 │   │   ├── services.py         # 日志查询与统计
 │   │   ├── metrics.py          # 图表聚合：趋势/排行 TTL 缓存 + 心跳历史环形缓冲
 │   │   ├── parsers.py          # 采集记录解析（auditd/syslog/winlog → 数据库行）
@@ -79,9 +80,11 @@ log-fusion/
 │   ├── nsfocus_api.py          # 凭据读取、事件与日志分页请求
 │   ├── nsfocus_log_search.py   # 单页请求与离线预览
 │   ├── analyze_samples.py     # 本地样例分析、JSONL 与中文报告
+│   ├── import_history.py       # 建表、最近三个月可续跑补录和状态命令
+│   ├── docs/SYNC.md            # 手动命令、关闭/开启后台、进度与完整性边界
 │   ├── probe_log_types.py     # 逐类核查安全设备日志的真实数据及样例
 │   ├── README.md / docs/API.md
-│   ├── docs/LOG_FUSION_TABLES.md / sql/log_fusion_nsfocus_tables.sql  # 三类日志在log_fusion库的未执行设计
+│   ├── docs/LOG_FUSION_TABLES.md / sql/log_fusion_nsfocus_tables.sql  # 三类日志在 log_fusion 库的实际 DDL
 │   ├── sql/log_fusion_nsfocus_tables.fields.json  # 三类完整字段映射
 │   └── config/ / data/ / reports/  # 配置与本地输出（真实凭据及数据不入 Git）
 ├── deploy/                     # 服务器部署：log-fusion.service（systemd 单元）；
@@ -206,7 +209,7 @@ python .\simulator\send_simulated_clients.py --url http://127.0.0.1:8080 --count
 
 ### 7.1 独立安全产品日志项目
 
-安全产品 API 的请求脚本、连接文件、接口说明、历史调试数据与样例分析已集中到与 `backend/` 同级的 `security-log-client/`。项目不接入 Log Fusion 的应用和数据库，运行方式见 [项目 README](../security-log-client/README.md)，接口实测见 [项目接口说明](../security-log-client/docs/API.md)。原 `tools/nsfocus_*.py` 和主文档下的专题说明已迁入该项目。
+安全产品 API 的请求脚本、连接文件、接口说明、历史调试数据与样例分析已集中到与 `backend/` 同级的 `security-log-client/`。项目已通过 backend/app/security_logs.py 接入 Log Fusion 的应用和 log_fusion 数据库，后台默认开启且仅实时；运行方式见 [项目 README](../security-log-client/README.md)，接口实测见 [项目接口说明](../security-log-client/docs/API.md)。原 `tools/nsfocus_*.py` 和主文档下的专题说明已迁入该项目。
 
 ## 8. 健康检查与排障
 
@@ -269,3 +272,9 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
 - `旧前端/docs/` 是遗留接口契约，只用于理解历史目标。
 - 根目录功能文档和开发清单包含规划与历史快照，不能直接当作当前验收结果。
 - 本基线没有连接真实 MySQL 核验线上 DDL、索引和数据量；相关未知项见 `DATABASE.md`。
+
+## 安全产品日志（2026-10-16）
+
+三类日志和断点表已实际建于 `log_fusion`。采集实现位于 `backend/app/security_logs.py`，独立 CLI 位于 `security-log-client/import_history.py`，命令与完整配置见 [同步说明](../security-log-client/docs/SYNC.md)。按用户最新要求，默认 `SECURITY_SYNC_ENABLED=true`，本机也已开启。启动仅采集近期数据，不创建或恢复三个月历史任务；未完成历史保留为 stopped。首次回看 120 秒、每 30 秒巡检、默认延后最新 30 秒，中断期间超过 600 秒的旧数据不追补。前端新增 `#/security`，每 10 秒读取已入库数据，即使采集关闭仍可查历史。Linux/Windows 原有统计与存证口径保留。
+
+安全日志配置：`SECURITY_OVERLAP_SECONDS=120`（首次及每轮重叠秒数）、`SECURITY_LIVE_WINDOW_SECONDS=600`（中断后最多回看秒数，必须不小于 overlap）、`SECURITY_POLL_SECONDS=30`、`SECURITY_LAG_SECONDS=30`。重启会重置本次实时起点，不沿用旧 live 队列。设置 `SECURITY_SYNC_ENABLED=false` 并重启可关闭；只保留单 worker。

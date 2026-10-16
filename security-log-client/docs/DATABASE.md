@@ -2,7 +2,7 @@
 
 > **当前选定方案**：用户已指定三类日志在 `log_fusion` 库分表，见 [三类专用表设计](LOG_FUSION_TABLES.md) 和 [当前建表 SQL](../sql/log_fusion_nsfocus_tables.sql)。本页保留早期字段核验和通用四表方案作为历史参考，早期 `schema_draft.sql` 不再是当前选定的落库方案。
 
-状态：**设计草案，未连接数据库，未执行建表或数据写入，也尚未实现数据库导入程序。** SQL 在 `../sql/schema_draft.sql`。目标语法为 MySQL 8.0+，实际服务器版本和容量尚未验证。本项目与 Log Fusion 的现有 Linux/Windows 业务表、心跳表及存证表独立。
+状态：**以下为早期 Windows/通用四表的历史草案，未执行该草案。当前实际三类日志建表和导入见 [LOG_FUSION_TABLES.md](LOG_FUSION_TABLES.md) 与 [SYNC.md](SYNC.md)。** SQL 在 `../sql/schema_draft.sql`。目标语法为 MySQL 8.0+，实际服务器版本和容量尚未验证。本项目与 Log Fusion 的现有 Linux/Windows 业务表、心跳表及存证表独立。
 
 ## 已取得的数据与字段数量
 

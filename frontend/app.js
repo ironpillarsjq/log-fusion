@@ -2,6 +2,7 @@ function dashboard() {
   return {
     /* ===== 页面与数据状态 ================================================== */
     page:'overview',navLogsOpen:false,clock:'',
+    securitySummary:null,securityRows:[],securityType:'ipslog',securityBefore:null,securityNext:null,securityBack:[],securityDetail:'',securityError:'',securityBusy:false,securityTimer:null,securityUpdated:'',
     summary:{total:0,by_platform:{Linux:0,Windows:0},categories:[]},categories:[],clients:[],logs:[],evidence:[],logKeys:[],logPlatform:'Linux',logCategory:'authentication_session',keyword:'',heartbeatMetrics:[],evidenceMetrics:[],overviewMetrics:[],
     // 心跳计数：WebSocket 快照与 REST 降级共用同一份（图表与指标都从这里取数）
     hbCounts:{total:0,online:0,delayed:0,offline:0},
@@ -81,10 +82,10 @@ function dashboard() {
     /* ===== 导航（二级菜单 + hash 深链）==================================== */
     pageFromHash(){
       const raw=String(location.hash||'').replace(/^#\/?/,'');
-      return ['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(raw)?raw:'';
+      return ['overview','heartbeat','logs','log-stats','evidence','maintenance','security'].includes(raw)?raw:'';
     },
     go(p,silent){
-      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(p))return;
+      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance','security'].includes(p))return;
       this.page=p;
       if(p==='logs'||p==='log-stats')this.navLogsOpen=true;
       try{history.replaceState(null,'','#/'+p)}catch(e){location.hash='#/'+p}
@@ -98,6 +99,7 @@ function dashboard() {
       else if(p==='logs'){this.loadLogs()}
       else if(p==='log-stats'){this.loadLogStats()}
       else if(p==='evidence'){this.loadEvidence()}
+      else if(p==='security'){this.loadSecurity()}
       this.afterPaint(()=>this.redrawVisible());
     },
     // Alpine 的 x-show 是异步生效的，必须等它把 display 改回来再画
@@ -234,7 +236,7 @@ function dashboard() {
     closeStreams(){try{if(this.ws)this.ws.close()}catch(e){}},
 
     async init(){
-      window.addEventListener('pagehide',()=>{this.closeStreams();this.disposeCharts()});
+      window.addEventListener('pagehide',()=>{clearInterval(this.securityTimer);this.closeStreams();this.disposeCharts()});
       // 图表只按容器初始尺寸绘制，窗口变化后必须重画，否则图形与图例错位
       window.addEventListener('resize',()=>this.resizeAll());
       const fromHash=this.pageFromHash();
@@ -258,6 +260,7 @@ function dashboard() {
       this.historyTimer=setInterval(()=>{if(this.page==='heartbeat'&&!this.historyBusy)this.loadHistory()},10000);
       this.pageTimer=setInterval(()=>{if(this.page==='logs')this.loadLogs();else if(this.page==='evidence')this.loadEvidence()},15000);
       this.statsTimer=setInterval(()=>{if(this.page==='log-stats'&&!this.statsBusy)this.loadLogStats()},30000);
+      this.securityTimer=setInterval(()=>{if(this.page==='security')this.loadSecurity()},10000);
     },
     tick(){this.clock=new Date().toLocaleString('zh-CN',{hour12:false})},
 
@@ -886,9 +889,41 @@ function dashboard() {
     scheduleWsReconnect(){if(this.wsTimer)return;const delay=Math.min(30000,1000*Math.pow(2,this.wsRetry++));this.wsTimer=setTimeout(()=>{this.wsTimer=null;this.connectMonitorWs()},delay)},
     // WebSocket 快照与 REST 降级都走这里：图表（在线率/分布/排行）因此自动继续更新，无额外代码路径
     applySnapshot(snap){
+      if(snap.type&&snap.type!=='snapshot'){
+        if(snap.type==='security_logs'&&this.page==='security')this.loadSecurity();
+        return;
+      }
       const clients=(snap.clients||[]).map(c=>({clientId:c.client_id,serverName:c.hostname,ipAddress:c.ip,os_type:c.system,lastHeartbeatAt:c.last_heartbeat,heartbeatDelaySec:c.heartbeatDelaySec,heartbeatStatus:c.status}));
       this.clients=clients;
       this.applyCounts(snap.total_clients,snap.online_clients,snap.delayed_clients,snap.offline_clients);
+    },
+    securityStatus(value){if(value==='stopped')return '已停止';if(value==='disabled')return '未安排';if(this.securitySummary?.enabled===false&&!this.securitySummary?.collectorActive&&value&&value!=='complete')return '断点已保存，等待续跑';return ({pending:'待开始',running:'处理中',complete:'已完成',watching:'持续采集中',retrying:'失败，等待重试'})[value]||'未初始化'},
+    securityEpoch(value){return value?this.fmtTime(new Date(value*1000).toISOString()):'—'},
+    async loadSecurity(){
+      if(this.securityBusy)return;
+      this.securityBusy=true;
+      const kind=this.securityType,before=this.securityBefore;
+      try{
+        const [summary,list]=await Promise.all([
+          this.api('/api/v1/security/summary'),
+          this.api('/api/v1/security/logs/'+encodeURIComponent(kind)+(before?'?before='+before:''))
+        ]);
+        this.securitySummary=summary;
+        if(this.securityType===kind&&this.securityBefore===before){this.securityRows=list.items||[];this.securityNext=list.nextBefore}
+        this.securityError='';this.securityUpdated=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+      }catch(e){this.securityError='安全日志读取失败：'+e.message}
+      finally{
+        this.securityBusy=false;
+        if(this.securityType!==kind||this.securityBefore!==before)this.loadSecurity();
+      }
+    },
+    securityReset(){this.securityBefore=null;this.securityNext=null;this.securityBack=[];this.securityDetail='';this.securityRows=[];this.loadSecurity()},
+    securityForward(){if(!this.securityNext||this.securityBusy)return;this.securityBack.push(this.securityBefore);this.securityBefore=this.securityNext;this.securityDetail='';this.loadSecurity()},
+    securityPrevious(){if(!this.securityBack.length||this.securityBusy)return;this.securityBefore=this.securityBack.pop();this.securityDetail='';this.loadSecurity()},
+    async showSecurityDetail(id){
+      const kind=this.securityType;
+      try{const record=await this.api('/api/v1/security/logs/'+encodeURIComponent(kind)+'/'+id);if(kind===this.securityType)this.securityDetail=JSON.stringify(record,null,2)}
+      catch(e){this.securityError='日志详情读取失败：'+e.message}
     }
   }
 }

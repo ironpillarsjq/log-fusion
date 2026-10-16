@@ -29,6 +29,7 @@ from .parsers import normalize_linux, normalize_windows, windows_table_for
 from .hashing import build_evidence_row
 from .archive import archive_evidence, archive_root, months_ago
 from .ws import ws_manager
+from .security_logs import CATALOG as SECURITY_CATALOG, ROOT as SECURITY_ROOT, SecurityStore, SecurityWorker
 
 logger = logging.getLogger("log_fusion")
 
@@ -53,6 +54,7 @@ def _compact_ingest_errors(errors: list[dict]) -> tuple[list[dict], int, bool]:
     return sample, total, total > len(sample)
 
 settings = get_settings()
+security_store = SecurityStore(monitor_engine, settings.security_source_instance)
 app = FastAPI(title=settings.app_name, version="1.0.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
@@ -148,21 +150,101 @@ async def _auto_archive_loop() -> None:
         await asyncio.sleep(ARCHIVE_INTERVAL_SECONDS)
 
 
+async def _security_sync_loop():
+    config = Path(settings.security_config_file)
+    if not config.is_absolute():
+        config = SECURITY_ROOT / config
+    worker = SecurityWorker(security_store, config, page_size=settings.security_page_size,
+                            poll_seconds=settings.security_poll_seconds,
+                            overlap=settings.security_overlap_seconds,
+                            lag=settings.security_lag_seconds, timeout=settings.security_timeout_seconds,
+                            live_only=True, live_window=settings.security_live_window_seconds)
+    initialized = False
+    while True:
+        step = None
+        try:
+            if not initialized:
+                initialized = await asyncio.to_thread(security_store.initialize_live,
+                                                     overlap=settings.security_overlap_seconds,
+                                                     lag=settings.security_lag_seconds)
+                if not initialized:
+                    await asyncio.sleep(1)
+                    continue
+            step = asyncio.create_task(asyncio.to_thread(worker.step))
+            event = await asyncio.shield(step)
+            if event:
+                await ws_manager.broadcast(event)
+        except asyncio.CancelledError:
+            # Let the bounded in-flight request/transaction finish before releasing the DB lock.
+            if step:
+                with suppress(Exception):
+                    await step
+            raise
+        except Exception:
+            logger.error("安全日志采集不可用；请检查同步表、配置和网络，稍后重试")
+            await asyncio.sleep(30)
+        await asyncio.sleep(1)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _ensure_tables()
     watchdog = asyncio.create_task(_status_watchdog())
     archiver = asyncio.create_task(_auto_archive_loop())
+    tasks = [watchdog, archiver]
+    if settings.security_sync_enabled:
+        tasks.append(asyncio.create_task(_security_sync_loop()))
     try:
         yield
     finally:
-        for task in (watchdog, archiver):
+        for task in tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
 
 
 app.router.lifespan_context = lifespan
+
+
+def _security_kind(kind: str):
+    if kind not in SECURITY_CATALOG:
+        raise HTTPException(422, "未知安全日志类型")
+    return kind
+
+
+@app.get("/api/v1/security/summary")
+def security_summary():
+    try:
+        result = security_store.summary()
+        result.update(enabled=settings.security_sync_enabled, pollSeconds=settings.security_poll_seconds,
+                      overlapSeconds=settings.security_overlap_seconds, lagSeconds=settings.security_lag_seconds,
+                      collectionMode="live_only", liveWindowSeconds=settings.security_live_window_seconds)
+        return {"code": 0, "message": "ok", "data": result}
+    except Exception:
+        raise HTTPException(503, "安全日志数据库或同步表不可用") from None
+
+
+@app.get("/api/v1/security/logs/{log_type}")
+def security_logs(log_type: str, before: int | None = Query(None, ge=1), limit: int = Query(30, ge=1, le=100)):
+    _security_kind(log_type)
+    try:
+        return {"code": 0, "message": "ok", "data": security_store.logs(log_type, before, limit)}
+    except Exception:
+        raise HTTPException(503, "安全日志数据表不可用") from None
+
+
+@app.get("/api/v1/security/logs/{log_type}/{record_id}")
+def security_log_detail(log_type: str, record_id: int):
+    _security_kind(log_type)
+    if record_id < 1:
+        raise HTTPException(422, "记录 ID 必须为正数")
+    try:
+        record = security_store.detail(log_type, record_id)
+    except Exception:
+        raise HTTPException(503, "安全日志数据表不可用") from None
+    if record is None:
+        raise HTTPException(404, "日志不存在")
+    return {"code": 0, "message": "ok", "data": record}
 
 ONLINE_MAX_AGE = 10
 DELAYED_MAX_AGE = 30

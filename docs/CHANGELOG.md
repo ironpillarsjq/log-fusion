@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+### Changed — 2026-10-16（启动仅补充最新安全日志，停止历史追补）
+
+- 用户确认现有历史导入量足够后，backend 固定使用 live_only 模式；不再调用三个月历史初始化或选择旧历史 pending。每次启动重设近期实时起点，后台默认开启，本机 .env 也已开启。
+- 默认首次回看 120 秒，每 30 秒巡检，延后最新 30 秒；连接中断时最多回看 600 秒，超过范围的旧 live 队列裁剪，不自动补停机期间所有历史。保留入库记录、计数和历史窗口，未完成历史标 stopped，不能误标已导完。
+- CLI run 默认仅实时，历史必须显式 --history-only；--until-complete 仅允许与历史模式组合。前端显示历史已停止、仅追加最新数据，既有每 10 秒刷新与 WS 保留。
+- 无实际数据库结构变化；摘要接口增加 collectionMode/liveWindowSeconds 及 stopped/disabled 状态说明，无新增路由。新增针对启动、长中断、队列裁剪和不回退历史的隔离测试。
+- 验证：287 项测试、两项图表自检通过；本机重启后摘要确认 live_only，三类近期巡检成功，IPS 首轮追加 58 条，原有 8 个历史窗口保持 stopped。
+
+
+### Added — 2026-10-16（三类安全日志建表、可续跑补录和前端查看）
+
+- 实际创建 log_fusion 三张安全日志表和 nsfocus_sync_state，保留原表。新增 backend/app/security_logs.py 归一化、身份去重/冲突检测、时间二分、事务断点、网络退避与会话锁；独立 CLI import_history.py 支持迁移、最近三个月补录、续跑和状态。
+- 新增三条只读 security API、#/security 页面和既有 WS 的 security_logs 通知，页面每 10 秒更新，原始日志以文本显示。新增配置默认关闭采集，单 worker；不引入 SSE。
+- 根据用户最新要求停止自动采集，本机开关已关闭，保留已导入 IPS 733 / WEB 9,284 / 黑名单 0 条及断点。10:12:03 北京时间只读核验近三个日历月匹配 IPS 6,008,700 / 黑名单 6,725 / WEB 18,946，共 6,034,371；不是已入库总量，完整历史由用户运行命令导入。
+- 添加不访问数据库的采集边界/去重/错误路径及 API 用例，迁移、配置、命令和限制见 security-log-client/docs/SYNC.md。保留另一项部署改动，将 README/本文件既有冲突两侧内容合并；未改 Git 合并索引。
+
+
 ### Documentation — 2026-10-16（三类安全产品日志使用 log_fusion 分表）
 
 - 按用户要求提供 `security-log-client/sql/log_fusion_nsfocus_tables.sql`，设计 `log_fusion.nsfocus_ips_log`、`log_fusion.nsfocus_ip_blacklist_log`、`log_fusion.nsfocus_web_security_log` 三张独立日志表；没有在数据库执行。
