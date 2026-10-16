@@ -100,7 +100,12 @@ if [ -n "$(git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]; then
 fi
 
 # 3) 拉取远端分支（网络抖动时有超时兜底，不至于一直占着锁）
-FETCH=(git -C "$APP_DIR" fetch --prune origin "$BRANCH")
+#
+# refspec 显式写成 `+refs/heads/<branch>:refs/remotes/origin/<branch>`：
+# 若只写 `git fetch --prune origin main`（无冒号），是否顺带更新 origin/main 取决于该仓库
+# 有没有配 `remote.origin.fetch`；配置缺失时只写 FETCH_HEAD，那么下面 `rev-parse origin/main`
+# 读到的是克隆时的旧 ref，脚本会误判「远端无新提交」而永远不更新（静默失效）。
+FETCH=(git -C "$APP_DIR" fetch --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH")
 if command -v timeout >/dev/null 2>&1; then
   FETCH=(timeout "$FETCH_TIMEOUT" "${FETCH[@]}")
 fi
@@ -115,6 +120,13 @@ NEW_HEAD="$(git -C "$APP_DIR" rev-parse "origin/$BRANCH")"
 
 # 4) 对齐到远端分支（只 reset；.env / data / .venv 靠 .gitignore 保护，绝不 git clean）
 if [ "$NEW_HEAD" = "$OLD_HEAD" ]; then
+  # 与本次 fetch 的实际结果核对：不一致说明本地远端引用没被更新（配置问题），
+  # 此时「无新提交」是假象——必须报错，而不是静默跳过让按钮假装成功。
+  if [ "$(git -C "$APP_DIR" rev-parse FETCH_HEAD)" != "$NEW_HEAD" ]; then
+    log "错误：origin/$BRANCH=$NEW_HEAD 与本次 fetch 的实际结果（$(git -C "$APP_DIR" rev-parse FETCH_HEAD)）不一致"
+    systemctl start "$SERVICE_NAME" || true
+    die "更新中止：本地远端引用未被更新，请检查 git -C $APP_DIR config --get-all remote.origin.fetch"
+  fi
   log "远端无新提交，跳过代码替换（$OLD_HEAD）"
 else
   git -C "$APP_DIR" reset --hard "origin/$BRANCH" || {
@@ -131,13 +143,18 @@ else
   fi
 
   # 5) 重装依赖（幂等；requirements.txt 有变化时才真去装）
-  if [ -x "$VENV_DIR/bin/pip" ] && [ -f "$REQUIREMENTS" ]; then
+  if [ -f "$REQUIREMENTS" ]; then
     if git -C "$APP_DIR" diff --quiet "$OLD_HEAD" "$NEW_HEAD" -- requirements.txt; then
       log "requirements.txt 无变化，跳过依赖安装"
-    else
+    elif [ -x "$VENV_DIR/bin/pip" ]; then
       log "requirements.txt 有变化，安装依赖 ..."
       PYTHONPATH="$BACKEND_DIR" "$VENV_DIR/bin/pip" install -r "$REQUIREMENTS" \
         || log "警告：依赖安装返回非零，仍继续尝试启动"
+    else
+      # 有些服务器的 venv 是 --without-pip 建的（bin/pip 不存在）。此时绝不能静默跳过，
+      # 否则新代码缺少依赖会以「启动失败」收场，而日志里看不到真正原因。
+      log "警告：requirements.txt 在本次更新中有变化，但 $VENV_DIR/bin/pip 不存在，依赖未安装！"
+      log "      修复后重试：$VENV_DIR/bin/python -m ensurepip --upgrade"
     fi
   fi
 fi

@@ -78,7 +78,7 @@ sudo bash /usr/local/bin/log-fusion-update.sh
 2. 如果服务器上存在**对已跟踪文件的未提交改动**（约定：代码只在本机改，这里正常应为空），先备份成 patch 到 `/root/lf-keep/pre-update-<时间戳>.patch`；
 3. `sleep 3` 让触发更新的 HTTP 响应先返回、页面上能看到「更新中」；
 4. `systemctl stop log-fusion`，等 8080 端口释放；
-5. `git fetch --prune origin main`（带超时兜底），随后 **`git reset --hard origin/main`**，让代码与远端严格一致；
+5. `git fetch --prune origin '+refs/heads/main:refs/remotes/origin/main'`（带超时兜底；refspec 显式写到 `refs/remotes/origin/main`，否则仓库缺 `remote.origin.fetch` 时只写 `FETCH_HEAD`、`origin/main` 不更新，会误判「远端无新提交」），随后 **`git reset --hard origin/main`**，让代码与远端严格一致；
 6. 仅当 `requirements.txt` 在两个版本之间有变化时，才执行 `.venv/bin/pip install -r requirements.txt`；
 7. 若 `deploy/log-fusion.service` 在本次更新里有变化，打印提示让你重跑 `sudo bash deploy/install-service.sh`（脚本不会替你改系统单元）；
 8. `systemctl start log-fusion`，最多等 30 秒轮询 `/health` 判定是否恢复。

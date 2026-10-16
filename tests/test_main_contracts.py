@@ -794,6 +794,26 @@ def test_update_script_updates_in_place_without_clean():
     assert "rm -rf" not in code
 
 
+def test_update_script_fetches_into_remote_tracking_ref():
+    """fetch 必须显式写 refs/remotes/origin/<branch>。
+
+    只写 `git fetch --prune origin main`（无冒号）时，是否顺带更新 `origin/main` 取决于
+    该仓库有没有配 `remote.origin.fetch`；配置缺失时只写 FETCH_HEAD，随后
+    `git rev-parse origin/main` 读到的是克隆时的旧 ref，脚本于是误判「远端无新提交」、
+    永远不更新——按钮看起来成功、实际什么都没做。
+    """
+    text = main._UPDATE_SCRIPT_SRC.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert ":refs/remotes/origin/$BRANCH" in code
+    assert 'rev-parse "origin/$BRANCH"' in code
+    # 且必须有「本地远端引用未被更新」的显式报错，不能静默跳过
+    assert "rev-parse FETCH_HEAD" in code
+    # venv 缺 pip 时，requirements 有变化也不能静默跳过安装
+    assert "ensurepip" in code
+
+
 def test_gitignore_protects_runtime_files_from_update():
     """原地更新的前提：运行期文件必须被 .gitignore 忽略，否则 reset 会覆盖它们。"""
     gitignore = main._UPDATE_SCRIPT_SRC.parents[1] / ".gitignore"
