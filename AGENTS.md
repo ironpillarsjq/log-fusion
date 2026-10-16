@@ -22,7 +22,7 @@
 
 **双击请用 `启动服务.cmd` / `启动模拟请求.cmd`，不要双击 `.ps1`**：本机 `.ps1` 的默认关联是 Windows 记事本（`AppX…Microsoft.WindowsNotepad`），双击只会用记事本打开、不执行脚本（表现为窗口一闪即退）。`.cmd` 内容全 ASCII，经 `tools\run-server.ps1`、`tools\run-simulator.ps1` 转发，避免 cmd.exe 按控制台代码页误读中文路径。模拟脚本的完整运行记录在 `%TEMP%\log-fusion-simulator.log`。
 
-测试：仓库根目录 `python -m pytest`（用例在 `tests/`，共 288 个，通过类级 patch 禁用 `Engine.connect/begin` 并把连接参数指向不可用占位值，**不连接任何数据库**）。无 lint / typecheck 配置。注意 `tests/test_archive.py`（21 个用例）用 `tmp_path`，而 pytest 以 `mode=0o700` 创建临时目录——在受限沙箱里这个模式会让目录**连创建者都无法删除**，于是 13 个用例报 ERROR（其余 275 个用例不受影响）。需要全绿时用完全权限跑（实测完全权限下 288 个全部通过）。
+测试：仓库根目录 `python -m pytest`（用例在 `tests/`，共 289 个，通过类级 patch 禁用 `Engine.connect/begin` 并把连接参数指向不可用占位值，**不连接任何数据库**）。无 lint / typecheck 配置。注意 `tests/test_archive.py`（21 个用例）用 `tmp_path`，而 pytest 以 `mode=0o700` 创建临时目录——在受限沙箱里这个模式会让目录**连创建者都无法删除**，于是 13 个用例报 ERROR（其余 276 个用例不受影响）。需要全绿时用完全权限跑（实测完全权限下 289 个全部通过）。
 
 服务端部署与「一键更新」见 `docs/DEPLOY.md`：`deploy/install-service.sh` 一次性（且幂等地）把 `deploy/log-fusion.service` 注册成 systemd 单元；前端「系统维护」页的按钮调用 `POST /api/v1/admin/update`，后者用 `systemd-run` 起**独立** transient 单元执行 `deploy/update-log-fusion.sh`（不能用普通后台进程——systemd 停服会清理整条 cgroup 把它一起杀掉）。更新脚本是**原地 git 更新**（`git fetch` + `git reset --hard origin/main`）：`.venv`/`.env`/`data`/`backend/data` 靠 `.gitignore` 保护，**严禁 `git clean`**（会删掉它们），服务器只应拉取、不在其上改代码（见 ADR-020）。
 

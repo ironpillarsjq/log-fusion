@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### Fixed — 2026-10-16（更新单元在旧 git 上秒退 129，且日志无痕）
+
+- 现象：页面上点更新后，`journalctl -u log-fusion-update` 只有一行 `code=exited, status=129`，脚本自己的 `/var/log/log-fusion-update.log` **根本不存在**，完全看不出原因；服务本身未受影响（失败发生在停服之前）。
+- 根因：`deploy/update-log-fusion.sh` 全程使用 `git -C "$APP_DIR"`，而服务器上的 git 是 CentOS 7 自带的 **1.8.3**（`-C` 需要 ≥ 1.8.5）。git 遇到用法错误固定以 **129** 退出，所以第一条 `git -C` 就让脚本当场中断。
+- 日志为什么没留下：脚本用 `exec > >(tee -a "$LOG_FILE") 2>&1`，而 systemd 单元默认 `KillMode=control-group`——主进程一退出就把它派生的 `tee` 一起杀掉，日志文件甚至来不及创建，journal 里也没有输出。
+- 修复：
+  - 脚本改为**先 `cd "$APP_DIR"` 再用普通 `git`**，去掉全部 `git -C`；远程地址改用 `git config --get remote.origin.url`（`git remote get-url` 需要 git 2.7+）。
+  - 日志改为脚本**自己直接追加写文件**（不再用 `tee`），并加 `set -E` + `ERR` trap：任何未预期的失败都会在日志里留下**退出码和失败命令**。
+- 测试：新增 `test_update_script_avoids_git_options_absent_in_old_git`（断言代码中不含 `git -C` / `remote get-url`，且必须有 `cd "$APP_DIR"` 与 ERR trap），用例数 288 → 289。
+- 无实际数据库结构变化，无实际接口行为变化。
+
 ### Fixed — 2026-10-16（更新脚本可能永远拉不到新代码）
 
 - 现象：服务器上 `git fetch --prune origin main` 明明成功、`git reset --hard origin/main` 却停在克隆时的旧提交（`HEAD is now at 6a36875`）。
