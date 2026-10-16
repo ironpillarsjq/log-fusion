@@ -64,8 +64,11 @@ systemctl status log-fusion
 
 ### 方式 B：SSH 手工执行
 
+**必须先把脚本复制到仓库之外再执行**——脚本会 `git reset --hard`，可能重写仓库里正在被 bash 读取的自己：
+
 ```bash
-sudo bash /opt/log-fusion/deploy/update-log-fusion.sh
+sudo cp /opt/log-fusion/deploy/update-log-fusion.sh /usr/local/bin/log-fusion-update.sh
+sudo bash /usr/local/bin/log-fusion-update.sh
 # 日志：tail -f /var/log/log-fusion-update.log
 ```
 
@@ -104,10 +107,10 @@ systemd 停止一个服务时会清理它**整条 cgroup**。如果更新脚本�
 仓库外的 `/usr/local/bin/log-fusion-update.sh` 再执行：`git reset --hard` 会重写仓库里的
 `deploy/update-log-fusion.sh`，而 bash 是边读边执行脚本的，正在执行的脚本文件被改写会导致执行错乱。
 
-## 4. 把更新脚本装到安全路径（可选）
+## 4. 把更新脚本装到仓库外
 
-接口每次都会把仓库内的 `deploy/update-log-fusion.sh` 复制到 `/usr/local/bin/log-fusion-update.sh`，
-所以这一步不是必须的；但想在 SSH 里直接敲 `log-fusion-update.sh` 时可以先装一次：
+页面按钮走的方式 A 会自动做这件事（接口每次都把仓库内的脚本复制到 `/usr/local/bin/log-fusion-update.sh` 再执行）。
+**SSH 手工执行前必须先装一次**，原因见上文「方式 B」：不能在仓库内直接跑自己。
 
 ```bash
 sudo install -m 0755 /opt/log-fusion/deploy/update-log-fusion.sh /usr/local/bin/log-fusion-update.sh
