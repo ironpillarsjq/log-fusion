@@ -1,0 +1,26 @@
+[Unit]
+Description=log-fusion 日志融合与审计分析平台（FastAPI）
+Documentation=https://github.com/ironpillarsjq/log-fusion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# 服务以 root 运行：更新脚本需要 systemctl / 覆盖 /opt 与写入 /root，见 deploy/update-log-fusion.sh。
+Type=simple
+WorkingDirectory=/opt/log-fusion/backend
+Environment=PYTHONPATH=/opt/log-fusion/backend
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/log-fusion/.venv/bin/python run.py
+Restart=always
+RestartSec=3
+# run.py 里 uvicorn 监听 0.0.0.0:8080 且开了 reload；SIGINT 等价于终端 Ctrl+C，能触发 uvicorn 优雅退出。
+# 注意：reload 是开发期特性（会额外派生一个子进程并监视文件），生产环境如需更省资源，
+# 可把 run.py 的 reload 改为读环境变量，或让 ExecStart 直接调用 uvicorn 而不带 --reload。
+KillSignal=SIGINT
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=log-fusion
+
+[Install]
+WantedBy=multi-user.target

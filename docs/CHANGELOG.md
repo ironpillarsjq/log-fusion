@@ -43,6 +43,24 @@
 - 实测日志每页 1,000 条、连续两页共 2,000 条，两页无重复，分别约 5.9/7.5 秒。批量顺序请求、固定时间范围、默认间隔 0.2 秒，逐页落盘并记录 manifest，异常或部分结果时停止；没有自动执行百万条全量下载。
 - 新增 `security-log-client/docs/API.md` 说明运行方式、结果与分页边界。无实际数据库结构变化，无实际接口行为变化。
 
+### Added — 2026-10-16（systemd 服务安装脚本，注册服务不再只有手工命令）
+
+- 新增 `deploy/install-service.sh`：把 `deploy/log-fusion.service` 安装到 `/etc/systemd/system/` 并 `daemon-reload` + `enable` + `restart` + 30 秒 `/health` 自检。**幂等**，可重复执行；单元内容有变化时先把旧文件备份成 `.bak` 再覆盖。执行前校验 root、`systemctl`、单元文件、`.venv/bin/python` 可执行、`backend/.env` 是否存在，并在 8080 被「非本服务的进程」占用时明确提示先停掉挂在 SSH 前台的 `run.py`。
+- `deploy/update-log-fusion.sh`：更新后若 `deploy/log-fusion.service` 在本次版本区间内有变化，打印「请重跑 install-service.sh」提示（脚本不替你改系统单元）；`systemctl start` 返回非零时改为继续等 `/health` 并给出排查线索，`git reset --hard` 失败时会先拉起服务再中止。
+- 新增契约测试：`log-fusion.service` / `install-service.sh` / `update-log-fusion.sh` 三处的服务名必须一致（对不上时 `systemctl stop` 属于静默失败），用例数 259 → 260。
+- `docs/DEPLOY.md`：§2 第 4 步改用安装脚本并说明其幂等性；§3 补充「单元变化」步骤；§5 排查表新增 4 行。
+- 无实际数据库结构变化，无实际接口行为变化。
+
+### Added — 2026-10-15（服务端一键更新：systemd 单元 + 更新接口 + 前端按钮）
+
+- 新增 `deploy/log-fusion.service`：把服务注册成 systemd 单元（`WorkingDirectory=/opt/log-fusion/backend`、`PYTHONPATH` 指向 backend、`ExecStart=<venv>/python run.py`、`Restart=always`、`KillSignal=SIGINT`），从此用 `systemctl start/stop/restart log-fusion` 管理，不再需要挂 SSH 前台终端。
+- 新增 `deploy/update-log-fusion.sh`：一键**原地**更新——校验是 git 工作树 → 备份服务器上未提交的改动为 patch → 停服 → `git fetch --prune` + `git reset --hard origin/main`（带超时兜底）→ 仅在 `requirements.txt` 有变化时装依赖 → 重启 → 最多 30 秒轮询 `/health` 自检；用 `flock` 防止并发更新。`.venv`/`backend/.env`/`data`/`backend/data` 都在 `.gitignore` 里，git 不会改动未跟踪/被忽略的文件，因此不再需要「搬出 → 删目录 → 重 clone → 搬回」，也**绝不使用 `git clean`**（见 ADR-020）。
+- 新增接口 `POST /api/v1/admin/update`（需 `confirm=true`）：把脚本复制到仓库外的 `/usr/local/bin/log-fusion-update.sh`，再用 `systemd-run --unit=log-fusion-update --collect` 起一个**独立**的 transient 单元执行后立即返回；已有更新在跑返回 409，服务器无 `systemd-run` 返回 500。用独立单元而非 `setsid`/`nohup`，是因为 systemd 停服会清理整条 cgroup，普通后台进程会被一起杀掉导致更新中断（详见 `docs/DEPLOY.md`）。
+- 前端新增「系统维护」页与「⇩ 拉取最新代码并重启服务」按钮：二次确认后触发接口，随后轮询 `/health`，服务恢复即自动刷新页面。
+- 新增 `docs/DEPLOY.md`：首次注册 systemd 服务、目录约定、两种更新方式、排查表与安全提醒。`app.js?v=` → `20261015-1`。
+- `.gitignore` 增加 `.venv/`（原地更新的前提是运行期文件都被忽略）；`tests/test_main_contracts.py` 新增两条契约测试，锁定「脚本只用 `reset --hard`、不含 `git clean`/`rm -rf`」与「`.gitignore` 必须忽略 `.venv/`/`.env`/`data/`/`backend/data/`」。
+- 无实际数据库结构变化；接口行为：仅新增 `POST /api/v1/admin/update` 一条路由（见 `docs/API.md` §8.1），其余接口不变。
+
 ### Added — 2026-10-15（绿盟用户日志查询脚本）
 
 - 新增独立标准库工具 `security-log-client/nsfocus_log_search.py`：按用户提供的 API 手册 §3.1 登录获取 Token，按 §3.4.1 查询一页用户日志，支持已有 Token、时间范围、分页、查询字符串、JSON 保存及离线请求预览。

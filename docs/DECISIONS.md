@@ -219,3 +219,43 @@
   - **存量无法补齐**：2026-10-15 之前入库的 441,408 行 Windows 日志没有保存原文，无法事后重算。经用户确认「只修往后」，不做历史重放。
   - 「日志总量」与「存证总数」仍不会相等（Linux 侧还有约 229,285 行早于存证功能上线的历史数据），两个指标并排展示本身有误导性，已作为待办登记。
 
+## ADR-019：服务端更新用独立 systemd 单元执行，而不是普通后台进程
+
+- 状态：已采用（2026-10-15）
+- 背景：需要在页面上加一个「拉取最新代码并重启服务」的按钮。更新必须停掉当前服务（`systemctl stop log-fusion`），却又不能连带把执行更新的进程一起杀掉。候选：
+  - 方案①：由后端进程 `subprocess` 执行更新脚本（同步或后台）。systemd 停止服务时会清理它**整条 cgroup**，脚本会和服务一起被杀，更新半途中断。
+  - 方案②：用 `setsid`/`nohup` 把脚本脱到后台。`nohup` 只屏蔽 SIGHUP，**挡不住 cgroup 清理**，同样会被杀。
+  - 方案③：用 `systemd-run` 起一个独立的 transient 单元。
+- 决策：接口把 `deploy/update-log-fusion.sh` 复制到**仓库之外**的 `/usr/local/bin/log-fusion-update.sh`，再用
+  `systemd-run --unit=log-fusion-update --collect --description=... /bin/bash <脚本>` 启动后立即返回；
+  脚本自己负责停服 → 拉取最新代码 → 装依赖 → 启动 → `/health` 自检；「如何拉取代码」已由 ADR-020 定为原地 `git reset --hard`。
+  已有同名单元在运行则返回 409；服务器没有 `systemd-run` 则返回 500。
+- 原因：transient 单元由 systemd 直接托管、**不属于 `log-fusion` 的 cgroup**，停服不影响它；`--collect` 自动回收失败残留。
+  脚本复制到仓库外，是因为更新过程会重写仓库内的 `deploy/update-log-fusion.sh`，而 bash 是边读边执行脚本的，
+  正在执行的脚本文件被改写会导致执行错乱。
+- 后果：
+  - 更新日志进 journal：`journalctl -u log-fusion-update -f`；同时写 `/var/log/log-fusion-update.log`。
+  - 依赖 systemd 与 `systemd-run`；非 systemd 环境只能 SSH 手工执行脚本（见 `docs/DEPLOY.md` §5）。
+  - 接口**无鉴权**（与全站一致），等于把重部署权限交给任何可达者，仅适用于受控内网/测试环境；加鉴权已登记 `docs/TODO.md`。
+  - 脚本用 `flock` 防止并发更新；取代码的具体方式（原为删目录重 clone）见 ADR-020。
+  - 归档目录 `data` 与 `backend/data` 都写在 `.gitignore` 里，原地更新不会碰它们（见 ADR-020）。
+- 备选与否决：方案①（同 cgroup 会被一起杀）、方案②（`nohup` 挡不住 cgroup 清理）均**否决**，理由如上。
+
+## ADR-020：更新脚本改用原地 git 更新，放弃「删目录重新 clone」
+
+- 状态：已采用（2026-10-15），取代 ADR-019 中「先克隆到临时目录、成功后才替换」的取代码方式
+- 背景：服务器上的 `/opt/log-fusion` 本来就是 `git clone` 出来的工作树。原脚本为了不丢 `.venv`/`.env`/`data`，
+  要在停服后把它们搬到 `/root/lf-keep`、删掉整个目录、重新 clone、再搬回来，逻辑长且每步都可能出错。候选：
+  - 方案①：删目录重新 clone（原方案）。需要搬移 + 回滚逻辑；慢（每次全量下载）；磁盘瞬时占用翻倍。
+  - 方案②：原地 git 更新——`git fetch` 后 `git reset --hard origin/main`。运行期文件靠 `.gitignore` 保护。
+- 决策：采用方案②。更新流程变为 `systemctl stop` → 备份未提交改动为 patch → `git fetch --prune` → `git reset --hard origin/main` → 按需 `pip install` → `systemctl start` → `/health` 自检。
+- 原因：`.venv`、`backend/.env`、`data/`、`backend/data/` 都在 `.gitignore` 里，而 **git 从不修改未跟踪/被忽略的文件**，
+  所以 `reset --hard` 天然跳过它们，搬移与回滚逻辑整段不再需要；更新是增量的，且保留 `.git` 历史。
+  用 `reset --hard origin/main` 而不是 `git pull`：服务器只应镜像远端，`pull` 在本地历史与远端分叉时会产生合并/冲突，`reset` 直接对齐。`.gitignore` 与脚本的行为由 `tests/test_main_contracts.py` 断言锁定。
+- 后果：
+  - **前提：服务器只拉取、不改代码。** 对已跟踪文件的未提交改动会被 `reset --hard` 覆盖；脚本会先备份成 `/root/lf-keep/pre-update-<时间戳>.patch`，但这不是常规工作流。
+  - **严禁 `git clean`**：`git clean -fdx` 会删掉 `.env`、`data`、`.venv`，即 `.gitignore` 正在保护的东西；测试会断言脚本不含 `git clean` / `rm -rf`。
+  - 服务器上未跟踪且未忽略的文件（如 `backend/fluent-bit-config/`）不受影响；但若远端新增同名路径，`reset` 会覆盖/删除它，脚本会在动手前打印这些路径。
+  - 需要 `/opt/log-fusion` 是健康的 git 工作树；不是（例如当初是手工拷上去的）则中止并提示按 `docs/DEPLOY.md` §2 重新 clone。
+- 备选与否决：方案①**否决**——在被 `git` 与 `.gitignore` 已经解决的问题上增加搬移/回滚复杂度，且每次全量拉取、磁盘占用翻倍。
+
