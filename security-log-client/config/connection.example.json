@@ -1,0 +1,7 @@
+{
+  "base_url": "https://192.0.2.10",
+  "username": "YOUR_USERNAME",
+  "password": "YOUR_PASSWORD",
+  "token": "",
+  "insecure": false
+}

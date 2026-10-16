@@ -4,6 +4,8 @@
 
 ## 1. 数据库划分
 
+独立 `security-log-client/` 项目按用户要求设计在 `log_fusion` 中新增 `nsfocus_ips_log`、`nsfocus_ip_blacklist_log`、`nsfocus_web_security_log` 三张专用表，详见 [三类日志分表设计](../security-log-client/docs/LOG_FUSION_TABLES.md)。**仅为未执行的草案**，尚未出现在本文核验的现有结构中，也未接入当前应用。早期 Windows 字段及通用四表参考保留在 [原字段核验文档](../security-log-client/docs/DATABASE.md)。
+
 当前应用连接同一 MySQL 服务上的四个逻辑库，并为每个库创建独立同步 SQLAlchemy Engine：
 
 | 配置项 | 默认库 | Engine | 用途 |

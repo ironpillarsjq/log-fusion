@@ -1,0 +1,6 @@
+[project]
+name = "security-log-client"
+version = "0.1.0"
+description = "Standalone security product API client and local sample analysis"
+requires-python = ">=3.10"
+dependencies = []

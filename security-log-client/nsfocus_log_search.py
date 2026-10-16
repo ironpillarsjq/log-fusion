@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """绿盟手册 §3.1 / §3.4.1：认证并查询一页用户日志（仅 Python 标准库）。
 
-python tools/nsfocus_log_search.py --base-url https://192.0.2.10 --username admin --type windows_log
+python nsfocus_log_search.py --base-url https://192.0.2.10 --username admin --type windows_log
 密码交互输入；也可设置 NSFOCUS_PASSWORD 或 NSFOCUS_TOKEN。
 """
 

@@ -52,7 +52,7 @@ flowchart LR
 | `frontend/app.js` | Alpine 页面状态、REST 调用、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
 | `启动服务.ps1` | 校验解释器、配置 PYTHONPATH、尝试开放防火墙、启动 Uvicorn | 默认 8080 |
 | `backend/simulator/...` | 读取外部样例并发送心跳及两类日志 | 开发联调工具 |
-| `tools/nsfocus_log_search.py` | 按绿盟手册 §3.1 认证、§3.4.1 查询一页用户日志，支持请求预览和 JSON 保存 | 独立标准库命令行工具，直连外部设备，不接入应用或数据库 |
+| `security-log-client/` | 独立安全产品 API 项目：`nsfocus_api.py` 认证与分页、`nsfocus_log_search.py` 单页预览、`analyze_samples.py` 离线分析、`probe_log_types.py` 逐类探测并保存样例；使用及接口文档在项目内 | 与 backend/ 同级；真实配置位于 config/，样例/历史记录位于 data/，分析位于 reports/，不接入应用和数据库 |
 
 `frontend/index.html` 与 `frontend/styles.css` 当前未被根路由使用；`/static` 挂载使它们可被直接访问，但不是现行页面入口。
 

@@ -74,8 +74,16 @@ log-fusion/
 ├── tests/                      # pytest 单元/契约测试（不连接数据库）
 ├── tools/                      # .cmd 启动器的 ASCII 转发脚本；chart-layout-check.cjs（概览环形图布局自检）；
 │                               # chart-render-check.cjs（全部图表的服务端渲染/空态/越界自检，可接 --live=URL 跑真实数据）；
-│                               # restore_archive.py（把归档 CSV 导回 log_hash，默认只预览）；
-│                               # nsfocus_log_search.py（绿盟设备认证及用户日志查询，独立标准库脚本）
+│                               # restore_archive.py（把归档 CSV 导回 log_hash，默认只预览）
+├── security-log-client/        # 独立安全产品 API 客户端，与 backend/ 同级
+│   ├── nsfocus_api.py          # 凭据读取、事件与日志分页请求
+│   ├── nsfocus_log_search.py   # 单页请求与离线预览
+│   ├── analyze_samples.py     # 本地样例分析、JSONL 与中文报告
+│   ├── probe_log_types.py     # 逐类核查安全设备日志的真实数据及样例
+│   ├── README.md / docs/API.md
+│   ├── docs/LOG_FUSION_TABLES.md / sql/log_fusion_nsfocus_tables.sql  # 三类日志在log_fusion库的未执行设计
+│   ├── sql/log_fusion_nsfocus_tables.fields.json  # 三类完整字段映射
+│   └── config/ / data/ / reports/  # 配置与本地输出（真实凭据及数据不入 Git）
 ├── 旧前端/                     # 遗留 Vue SPA，只读参考
 ├── 旧后端/                     # 遗留 Spring Boot，只读参考
 ├── 启动服务.cmd / 启动服务.ps1
@@ -193,33 +201,9 @@ python .\simulator\send_simulated_clients.py --url http://127.0.0.1:8080 --count
 
 `--count 0` 表示持续发送；默认间隔 3 秒；`--clients` 可覆盖客户端标识列表。模拟器自身的 URL 默认值已与启动脚本一致（`http://127.0.0.1:8080`，2026-10-13 由 8000 改齐），直接调用无需再显式传 `--url`。
 
-### 7.1 绿盟设备用户日志查询（独立工具）
+### 7.1 独立安全产品日志项目
 
-`tools/nsfocus_log_search.py` 根据用户提供的绿盟 API 手册 §3.1 / §3.4.1 编写，使用 Python 3 标准库，无需额外安装依赖。查询外部绿盟设备，不向 Log Fusion 导入日志。
-
-```powershell
-# 把示例地址换成设备实际地址；运行后交互输入密码
-python tools/nsfocus_log_search.py --base-url https://192.0.2.10 --username admin --type windows_log
-
-# 时间戳按手册 10 位示例推定为 Unix 秒；查询指定页并保存完整响应
-python tools/nsfocus_log_search.py --base-url https://192.0.2.10 --username admin --type windows_log --query-string "*" --start-time 1644543000 --end-time 1644546600 --page 1 --size 10 --output nsfocus_logs.json
-
-# 只预览查询请求，不登录、不联网
-python tools/nsfocus_log_search.py --base-url https://192.0.2.10 --type windows_log --dry-run
-
-# 推荐限定查询范围，例如最近 24 小时，避免无时间限制查询超时
-$queryEnd = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-$queryStart = $queryEnd - 86400
-python tools/nsfocus_log_search.py --base-url https://192.0.2.10 --username admin --type windows_log --start-time $queryStart --end-time $queryEnd --size 10
-```
-
-日志类型必须填写设备实际支持的标识；手册示例为 `windows_log`，多个类型用逗号分隔。未指定的时间字段不发送；默认查询一页（第 1 页、10 条），翻页使用 `--page`，不自动拉取全部日志。完整参数见 `--help`。
-
-认证使用 `POST /api/v2/auth`（JSON 字段 `name`、`password`），随后携带 `Auth-Token` 调用 `POST /api/audit/log/search`。也可通过 `NSFOCUS_USERNAME` / `NSFOCUS_PASSWORD` 环境变量登录，或提供 `NSFOCUS_TOKEN` 跳过登录；不打印或保存认证响应。查询固定 `query_type="es"`，默认 `query_string="*"`。HTTP 错误、非 JSON、业务错误码会返回非零退出码；`partOfData=true` 时提醒缩小时间范围。
-
-默认验证 HTTPS 证书，私有 CA 使用 `--ca-cert <PEM文件>`，受控测试自签名设备可显式加 `--insecure`。脚本忽略系统代理以直连内网设备，并拒绝 HTTP 重定向。手册文件名标注 V2.0R02F01，内页页眉为 V2.0R01F00；其他设备版本的兼容性仍需分别核验。
-
-2026-10-15 经用户授权实机验证：登录返回 `errCode=0`，使用 Unix 秒时间戳查询最近 24 小时的 `windows_log` 成功返回 10 条日志，查询耗时约 10.8 秒。首次未限制时间范围的请求读取超时；最近一小时查询返回 0 条，因此空结果应结合查询时间与类型判断。调试响应保存在 `data/nsfocus_debug/logs_windows_last24h.json`（本地运行产物，`data/` 已被 Git 忽略）；账号密码及 Token 未写入仓库文件。
+安全产品 API 的请求脚本、连接文件、接口说明、历史调试数据与样例分析已集中到与 `backend/` 同级的 `security-log-client/`。项目不接入 Log Fusion 的应用和数据库，运行方式见 [项目 README](../security-log-client/README.md)，接口实测见 [项目接口说明](../security-log-client/docs/API.md)。原 `tools/nsfocus_*.py` 和主文档下的专题说明已迁入该项目。
 
 ## 8. 健康检查与排障
 

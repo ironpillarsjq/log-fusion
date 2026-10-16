@@ -1,0 +1,7 @@
+# Local credentials and captured security logs
+config/connection.json
+config/connection.json.tmp
+data/
+reports/
+__pycache__/
+*.pyc

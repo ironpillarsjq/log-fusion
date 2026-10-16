@@ -1,0 +1,2754 @@
+{
+  "design_date": "2026-10-16",
+  "database": "log_fusion",
+  "status": "design_only_not_executed",
+  "tables": [
+    {
+      "table": "nsfocus_ips_log",
+      "api_type": "ipslog",
+      "display": "入侵防护日志",
+      "api_field_count": 70,
+      "csv_header_count": 100,
+      "source_column_count": 110,
+      "metadata_column_count": 8,
+      "total_column_count": 118,
+      "sample_response_files": [
+        "data/type-probes/20261015T085710_068890Z/responses/ipslog_24h.json",
+        "data/type-probes/20261015T115217_913168Z/responses/ipslog_2208h.json",
+        "data/type-probes/20261015T115217_913168Z/responses/ipslog_720h.json"
+      ],
+      "fields": [
+        {
+          "field": "acted",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "实际处理动作原值，不能与 action 合并"
+        },
+        {
+          "field": "action",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "动作原值，不猜测 1/3/5 的中文含义"
+        },
+        {
+          "field": "action_mapping",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "affect_os",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 affect_os"
+        },
+        {
+          "field": "app_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "app_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "ar",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 ar"
+        },
+        {
+          "field": "asset_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 asset_name"
+        },
+        {
+          "field": "attack_type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游字符串分类，不强制假定为整数枚举"
+        },
+        {
+          "field": "breaking_sighn",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "card",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 card"
+        },
+        {
+          "field": "cascade_node_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cascade_node_id"
+        },
+        {
+          "field": "cdnip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cdnip"
+        },
+        {
+          "field": "cnnvd_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cnnvd_id"
+        },
+        {
+          "field": "collector_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 collector_id"
+        },
+        {
+          "field": "count",
+          "sql_type": "BIGINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "次数；API 样例为数字字符串，非空时转非负整数"
+        },
+        {
+          "field": "cve_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cve_id"
+        },
+        {
+          "field": "cwe_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cwe_id"
+        },
+        {
+          "field": "danger_degree",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dcity",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dcity"
+        },
+        {
+          "field": "dcountry",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dcountry"
+        },
+        {
+          "field": "detail",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "详细内容，与 raw_data 分别保留"
+        },
+        {
+          "field": "dev_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dev_ip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dev_ip"
+        },
+        {
+          "field": "device_type",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 device_type"
+        },
+        {
+          "field": "digest",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游 digest，可能是较长内容编码，不当作固定长度哈希"
+        },
+        {
+          "field": "dip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dip"
+        },
+        {
+          "field": "dip_int",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "direction",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 direction"
+        },
+        {
+          "field": "dmac",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dmac"
+        },
+        {
+          "field": "dport",
+          "sql_type": "SMALLINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "目的端口；非空时转整数并校验 0..65535"
+        },
+        {
+          "field": "ds",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dst_addr",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dst_asset",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dst_asset"
+        },
+        {
+          "field": "dst_port",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dzonename",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dzonename"
+        },
+        {
+          "field": "event",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游日志名称/检测描述，并非事件接口 eventNsuid"
+        },
+        {
+          "field": "extension",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 extension"
+        },
+        {
+          "field": "facility",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 facility"
+        },
+        {
+          "field": "gr_danger",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_danger_mapping",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_os",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_pop",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_service",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_servicer",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_tech",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "gr_type_mapping",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "hash",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "key1",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 key1"
+        },
+        {
+          "field": "last_times",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "log_date",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "log_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": false,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游日志 ID；必填，按原值保存"
+        },
+        {
+          "field": "log_source_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "日志来源 ID，不等同于产品实例编号"
+        },
+        {
+          "field": "log_src_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 log_src_id，按原值保留"
+        },
+        {
+          "field": "log_time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API log_time 秒值"
+        },
+        {
+          "field": "log_type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "loginip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "manufacturers",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 manufacturers"
+        },
+        {
+          "field": "module",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 module"
+        },
+        {
+          "field": "msel",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "msg",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "msgtype",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "ns_date",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 ns_date"
+        },
+        {
+          "field": "offset",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 offset"
+        },
+        {
+          "field": "oper_result",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "partition",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 partition"
+        },
+        {
+          "field": "platform_gid",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "platform_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "policy_id",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 policy_id"
+        },
+        {
+          "field": "popular",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 popular"
+        },
+        {
+          "field": "priority",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 priority"
+        },
+        {
+          "field": "product",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 product"
+        },
+        {
+          "field": "proto",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "protocol",
+          "sql_type": "VARCHAR(32)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 protocol"
+        },
+        {
+          "field": "pversion",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 pversion"
+        },
+        {
+          "field": "raw_data",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 原始日志文本；CSV 导出样例该列为空"
+        },
+        {
+          "field": "raw_info",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "raw_len",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "rawinfo",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "原始报文/内容字符串，不解码或截短"
+        },
+        {
+          "field": "rawlen",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 rawlen"
+        },
+        {
+          "field": "recv_time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API Unix 毫秒接收时间戳"
+        },
+        {
+          "field": "rule_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 导出模板列，与 ruleid 的别名关系未验证"
+        },
+        {
+          "field": "ruleid",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游 ruleid；不要未经核对合并 CSV 的 rule_id"
+        },
+        {
+          "field": "scity",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 scity"
+        },
+        {
+          "field": "scountry",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 scountry"
+        },
+        {
+          "field": "security_name",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 security_name"
+        },
+        {
+          "field": "service",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 service"
+        },
+        {
+          "field": "severity",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 severity 原值，不套用事件接口 risk 映射"
+        },
+        {
+          "field": "sip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 sip"
+        },
+        {
+          "field": "sip_int",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "smac",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 smac"
+        },
+        {
+          "field": "smt_user",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 smt_user"
+        },
+        {
+          "field": "snapshot",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "sport",
+          "sql_type": "SMALLINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "源端口；非空时转整数并校验 0..65535"
+        },
+        {
+          "field": "src_addr",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "src_asset",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 src_asset"
+        },
+        {
+          "field": "src_port",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "szonename",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 szonename"
+        },
+        {
+          "field": "table",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "source.table，与 API 外层 index 分别保留"
+        },
+        {
+          "field": "threat_level",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游威胁等级原值，未确认统一中文等级"
+        },
+        {
+          "field": "threat_type",
+          "sql_type": "VARCHAR(255)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 threat_type"
+        },
+        {
+          "field": "time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "设备上报 time；API 样例为秒值字符串，与 timestamp 独立保留"
+        },
+        {
+          "field": "timestamp",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API Unix 秒时间戳，不是 MySQL TIMESTAMP 类型"
+        },
+        {
+          "field": "topic",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 topic"
+        },
+        {
+          "field": "type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "user",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "user_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 user_name"
+        },
+        {
+          "field": "vender",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游厂商字段拼写原样保留"
+        },
+        {
+          "field": "vid",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 vid"
+        }
+      ]
+    },
+    {
+      "table": "nsfocus_ip_blacklist_log",
+      "api_type": "ipblacklistlog",
+      "display": "恶意 IP 全局黑名单日志",
+      "api_field_count": 62,
+      "csv_header_count": 0,
+      "source_column_count": 62,
+      "metadata_column_count": 8,
+      "total_column_count": 70,
+      "sample_response_files": [
+        "data/type-probes/20261015T085710_068890Z/responses/ipblacklistlog_24h.json",
+        "data/type-probes/20261015T115217_913168Z/responses/ipblacklistlog_2208h.json",
+        "data/type-probes/20261015T115217_913168Z/responses/ipblacklistlog_720h.json"
+      ],
+      "fields": [
+        {
+          "field": "acted",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "实际处理动作原值，不能与 action 合并"
+        },
+        {
+          "field": "action",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "动作原值，不猜测 1/3/5 的中文含义"
+        },
+        {
+          "field": "ar",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 ar"
+        },
+        {
+          "field": "asset_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 asset_name"
+        },
+        {
+          "field": "card",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 card"
+        },
+        {
+          "field": "cascade_node_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 cascade_node_id"
+        },
+        {
+          "field": "cdnip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 cdnip"
+        },
+        {
+          "field": "collector_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 collector_id"
+        },
+        {
+          "field": "count",
+          "sql_type": "BIGINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "次数；API 样例为数字字符串，非空时转非负整数"
+        },
+        {
+          "field": "dcity",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dcity"
+        },
+        {
+          "field": "dcountry",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dcountry"
+        },
+        {
+          "field": "detail",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "详细内容，与 raw_data 分别保留"
+        },
+        {
+          "field": "dev_ip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dev_ip"
+        },
+        {
+          "field": "device_type",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 device_type"
+        },
+        {
+          "field": "dip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dip"
+        },
+        {
+          "field": "direction",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 direction"
+        },
+        {
+          "field": "dmac",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dmac"
+        },
+        {
+          "field": "domain",
+          "sql_type": "VARCHAR(1024)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "检测域名；黑名单日志不只包含 IP"
+        },
+        {
+          "field": "dport",
+          "sql_type": "SMALLINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "目的端口；非空时转整数并校验 0..65535"
+        },
+        {
+          "field": "dst_asset",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dst_asset"
+        },
+        {
+          "field": "dzonename",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 dzonename"
+        },
+        {
+          "field": "engine",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "检测引擎名称"
+        },
+        {
+          "field": "event",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游日志名称/检测描述，并非事件接口 eventNsuid"
+        },
+        {
+          "field": "facility",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 facility"
+        },
+        {
+          "field": "ip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 ip 原值，允许保留 0.0.0.0，不用 sip/dip 替代"
+        },
+        {
+          "field": "key1",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 key1"
+        },
+        {
+          "field": "log_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": false,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游日志 ID；必填，按原值保存"
+        },
+        {
+          "field": "log_source_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "日志来源 ID，不等同于产品实例编号"
+        },
+        {
+          "field": "log_src_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 log_src_id，按原值保留"
+        },
+        {
+          "field": "log_time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API log_time 秒值"
+        },
+        {
+          "field": "manufacturers",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 manufacturers"
+        },
+        {
+          "field": "module",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 module"
+        },
+        {
+          "field": "ns_date",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 ns_date"
+        },
+        {
+          "field": "offset",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 offset"
+        },
+        {
+          "field": "partition",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 partition"
+        },
+        {
+          "field": "policy_id",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 policy_id"
+        },
+        {
+          "field": "priority",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 priority"
+        },
+        {
+          "field": "product",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 product"
+        },
+        {
+          "field": "protocol",
+          "sql_type": "VARCHAR(32)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 protocol"
+        },
+        {
+          "field": "pversion",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 pversion"
+        },
+        {
+          "field": "raw_data",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 原始日志文本；CSV 导出样例该列为空"
+        },
+        {
+          "field": "recv_time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API Unix 毫秒接收时间戳"
+        },
+        {
+          "field": "ruleid",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 ruleid；不要未经核对合并 CSV 的 rule_id"
+        },
+        {
+          "field": "scity",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 scity"
+        },
+        {
+          "field": "scountry",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 scountry"
+        },
+        {
+          "field": "security_name",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 security_name"
+        },
+        {
+          "field": "severity",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 severity 原值，不套用事件接口 risk 映射"
+        },
+        {
+          "field": "sip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 sip"
+        },
+        {
+          "field": "smac",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 smac"
+        },
+        {
+          "field": "smt_user",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 smt_user"
+        },
+        {
+          "field": "sport",
+          "sql_type": "SMALLINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "源端口；非空时转整数并校验 0..65535"
+        },
+        {
+          "field": "src_asset",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 src_asset"
+        },
+        {
+          "field": "szonename",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 szonename"
+        },
+        {
+          "field": "table",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "source.table，与 API 外层 index 分别保留"
+        },
+        {
+          "field": "threat_level",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游威胁等级原值，未确认统一中文等级"
+        },
+        {
+          "field": "threat_type",
+          "sql_type": "VARCHAR(255)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 threat_type"
+        },
+        {
+          "field": "time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "设备上报 time；API 样例为秒值字符串，与 timestamp 独立保留"
+        },
+        {
+          "field": "timestamp",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API Unix 秒时间戳，不是 MySQL TIMESTAMP 类型"
+        },
+        {
+          "field": "topic",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 topic"
+        },
+        {
+          "field": "user_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 user_name"
+        },
+        {
+          "field": "vender",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游厂商字段拼写原样保留"
+        },
+        {
+          "field": "vid",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 vid"
+        }
+      ]
+    },
+    {
+      "table": "nsfocus_web_security_log",
+      "api_type": "ips_web_secure_event_log",
+      "display": "WEB 安全日志",
+      "api_field_count": 64,
+      "csv_header_count": 73,
+      "source_column_count": 84,
+      "metadata_column_count": 8,
+      "total_column_count": 92,
+      "sample_response_files": [
+        "data/type-probes/20261015T085710_068890Z/responses/ips_web_secure_event_log_24h.json",
+        "data/type-probes/20261015T115217_913168Z/responses/ips_web_secure_event_log_2208h.json",
+        "data/type-probes/20261015T115217_913168Z/responses/ips_web_secure_event_log_720h.json"
+      ],
+      "fields": [
+        {
+          "field": "acted",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "实际处理动作原值，不能与 action 合并"
+        },
+        {
+          "field": "action",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "动作原值，不猜测 1/3/5 的中文含义"
+        },
+        {
+          "field": "action_mapping",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "affect_os",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "ar",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 ar"
+        },
+        {
+          "field": "asset_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 asset_name"
+        },
+        {
+          "field": "attack_type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "上游字符串分类，不强制假定为整数枚举"
+        },
+        {
+          "field": "card",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 card"
+        },
+        {
+          "field": "cascade_node_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cascade_node_id"
+        },
+        {
+          "field": "cdnip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 cdnip"
+        },
+        {
+          "field": "cnnvd_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "collector_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 collector_id"
+        },
+        {
+          "field": "count",
+          "sql_type": "BIGINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "次数；API 样例为数字字符串，非空时转非负整数"
+        },
+        {
+          "field": "cve_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "cwe_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dcity",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dcity"
+        },
+        {
+          "field": "dcountry",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dcountry"
+        },
+        {
+          "field": "detail",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "详细内容，与 raw_data 分别保留"
+        },
+        {
+          "field": "dev_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "dev_ip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dev_ip"
+        },
+        {
+          "field": "device_type",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 device_type"
+        },
+        {
+          "field": "digest",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游 digest，可能是较长内容编码，不当作固定长度哈希"
+        },
+        {
+          "field": "dip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dip"
+        },
+        {
+          "field": "direction",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 direction"
+        },
+        {
+          "field": "dmac",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dmac"
+        },
+        {
+          "field": "dport",
+          "sql_type": "SMALLINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "目的端口；非空时转整数并校验 0..65535"
+        },
+        {
+          "field": "dst_asset",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dst_asset"
+        },
+        {
+          "field": "dzonename",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 dzonename"
+        },
+        {
+          "field": "event",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游日志名称/检测描述，并非事件接口 eventNsuid"
+        },
+        {
+          "field": "extension",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "facility",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 facility"
+        },
+        {
+          "field": "gr_type_mapping",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "hash",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "key1",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 key1"
+        },
+        {
+          "field": "log_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": false,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游日志 ID；必填，按原值保存"
+        },
+        {
+          "field": "log_source_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "日志来源 ID，不等同于产品实例编号"
+        },
+        {
+          "field": "log_src_id",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 log_src_id，按原值保留"
+        },
+        {
+          "field": "log_time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API log_time 秒值"
+        },
+        {
+          "field": "log_type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "loginip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "manufacturers",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 manufacturers"
+        },
+        {
+          "field": "module",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 module"
+        },
+        {
+          "field": "msg",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "ns_date",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 ns_date"
+        },
+        {
+          "field": "offset",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 offset"
+        },
+        {
+          "field": "oper_result",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "partition",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 partition"
+        },
+        {
+          "field": "policy_id",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 policy_id"
+        },
+        {
+          "field": "popular",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "priority",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 priority"
+        },
+        {
+          "field": "product",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 product"
+        },
+        {
+          "field": "protocol",
+          "sql_type": "VARCHAR(32)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 protocol"
+        },
+        {
+          "field": "pversion",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 pversion"
+        },
+        {
+          "field": "raw_data",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 原始日志文本；CSV 导出样例该列为空"
+        },
+        {
+          "field": "rawinfo",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "原始报文/内容字符串，不解码或截短"
+        },
+        {
+          "field": "rawlen",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 rawlen"
+        },
+        {
+          "field": "recv_time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API Unix 毫秒接收时间戳"
+        },
+        {
+          "field": "rule_id",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 导出模板列，与 ruleid 的别名关系未验证"
+        },
+        {
+          "field": "ruleid",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游 ruleid；不要未经核对合并 CSV 的 rule_id"
+        },
+        {
+          "field": "scity",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 scity"
+        },
+        {
+          "field": "scountry",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 scountry"
+        },
+        {
+          "field": "security_name",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 security_name"
+        },
+        {
+          "field": "service",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "severity",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": false,
+          "description": "上游 severity 原值，不套用事件接口 risk 映射"
+        },
+        {
+          "field": "sip",
+          "sql_type": "VARCHAR(64)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 sip"
+        },
+        {
+          "field": "smac",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 smac"
+        },
+        {
+          "field": "smt_user",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 smt_user"
+        },
+        {
+          "field": "sport",
+          "sql_type": "SMALLINT UNSIGNED",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "源端口；非空时转整数并校验 0..65535"
+        },
+        {
+          "field": "src_asset",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 src_asset"
+        },
+        {
+          "field": "szonename",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 szonename"
+        },
+        {
+          "field": "table",
+          "sql_type": "VARCHAR(128)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "source.table，与 API 外层 index 分别保留"
+        },
+        {
+          "field": "threat_level",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游威胁等级原值，未确认统一中文等级"
+        },
+        {
+          "field": "threat_type",
+          "sql_type": "VARCHAR(255)",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 threat_type"
+        },
+        {
+          "field": "time",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "设备上报 time；API 样例为秒值字符串，与 timestamp 独立保留"
+        },
+        {
+          "field": "timestamp",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API Unix 秒时间戳，不是 MySQL TIMESTAMP 类型"
+        },
+        {
+          "field": "topic",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "API 字段 topic"
+        },
+        {
+          "field": "uri",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "url",
+          "sql_type": "LONGTEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游完整 URL，不截断"
+        },
+        {
+          "field": "user",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "user_name",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 user_name"
+        },
+        {
+          "field": "vender",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": true,
+          "description": "上游厂商字段拼写原样保留"
+        },
+        {
+          "field": "version",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": false,
+          "observed_types": [],
+          "present_in_csv_header": true,
+          "description": "CSV 模板扩展字段；实际类型未确认，暂保留文本"
+        },
+        {
+          "field": "vid",
+          "sql_type": "BIGINT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "int"
+          ],
+          "present_in_csv_header": true,
+          "description": "API 字段 vid"
+        },
+        {
+          "field": "websecure_type",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "observed_in_api": true,
+          "observed_types": [
+            "str"
+          ],
+          "present_in_csv_header": false,
+          "description": "WEB 安全分类原值"
+        }
+      ]
+    }
+  ]
+}
