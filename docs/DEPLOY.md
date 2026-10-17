@@ -78,12 +78,12 @@ sudo bash /usr/local/bin/log-fusion-update.sh
 2. 如果服务器上存在**对已跟踪文件的未提交改动**（约定：代码只在本机改，这里正常应为空），先备份成 patch 到 `/root/lf-keep/pre-update-<时间戳>.patch`；
 3. `sleep 3` 让触发更新的 HTTP 响应先返回、页面上能看到「更新中」；
 4. `systemctl stop log-fusion`，等 8080 端口释放；
-5. `git fetch --prune origin main`（带超时兜底），随后 **`git reset --hard origin/main`**，让代码与远端严格一致；
+5. `git fetch --prune origin '+refs/heads/main:refs/remotes/origin/main'`（带超时兜底；refspec 显式写到 `refs/remotes/origin/main`，否则仓库缺 `remote.origin.fetch` 时只写 `FETCH_HEAD`、`origin/main` 不更新，会误判「远端无新提交」），随后 **`git reset --hard origin/main`**，让代码与远端严格一致；
 6. 仅当 `requirements.txt` 在两个版本之间有变化时，才执行 `.venv/bin/pip install -r requirements.txt`；
 7. 若 `deploy/log-fusion.service` 在本次更新里有变化，打印提示让你重跑 `sudo bash deploy/install-service.sh`（脚本不会替你改系统单元）；
 8. `systemctl start log-fusion`，最多等 30 秒轮询 `/health` 判定是否恢复。
 
-并用 `flock` 保证同一时间只有一次更新在跑。
+并用 `flock` 保证同一时间只有一次更新在跑。脚本**自己直接追加写** `/var/log/log-fusion-update.log`（不用 `exec > >(tee …)`：systemd 默认 `KillMode=control-group`，主进程一退出就连坐杀掉 `tee`，早期失败会连日志文件都来不及建），并且装了 `ERR` trap，任何未预期的失败都会在日志里留下**退出码和失败命令**。
 
 ### 为什么可以「原地更新」而不用删目录重 clone
 
@@ -125,6 +125,8 @@ sudo install -m 0755 /opt/log-fusion/deploy/update-log-fusion.sh /usr/local/bin/
 | 更新后服务没起来 | `journalctl -u log-fusion -n 100`、`tail -n 100 /var/log/log-fusion-update.log` |
 | 更新卡住/失败残留单元 | `systemctl status log-fusion-update`；`sudo systemctl reset-failed log-fusion-update` |
 | 页面点按钮报 500 且提到 systemd | 服务还没注册；先 `sudo bash /opt/log-fusion/deploy/install-service.sh` |
+| 更新单元**秒退**、`code=exited, status=129`、日志里一行都没有 | 服务器 git 太老（CentOS 7 自带 1.8.3）不支持 `git -C`，git 会以用法错误码 129 退出。脚本已改为「先 `cd` 再用 `git`」，把脚本更新到最新即可；`git --version` 可确认版本 |
+| 更新单元今天失败过、但 `systemctl show log-fusion-update` 显示 `Result=success` | `systemctl reset-failed log-fusion-update` 会把失败状态清成默认值；判断有没有跑成功要以 `/var/log/log-fusion-update.log` 和 `git log -1` 为准 |
 | 安装脚本报「8080 已被占用且不是 log-fusion 服务」 | 手工启动的 `run.py` 还挂在 SSH 前台；先 Ctrl+C 或 `pkill -f 'run.py'` 再重跑安装脚本 |
 | 安装脚本报「未找到可执行的 /opt/log-fusion/.venv/bin/python」 | 虚拟环境没建或路径不对；按 §2 第 2 步建好再装单元 |
 | 提示 `deploy/log-fusion.service` 有变化 | 单元文件改了但系统里还是旧的；重跑 `sudo bash deploy/install-service.sh` 同步 |

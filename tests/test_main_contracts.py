@@ -794,6 +794,44 @@ def test_update_script_updates_in_place_without_clean():
     assert "rm -rf" not in code
 
 
+def test_update_script_fetches_into_remote_tracking_ref():
+    """fetch 必须显式写 refs/remotes/origin/<branch>。
+
+    只写 `git fetch --prune origin main`（无冒号）时，是否顺带更新 `origin/main` 取决于
+    该仓库有没有配 `remote.origin.fetch`；配置缺失时只写 FETCH_HEAD，随后
+    `git rev-parse origin/main` 读到的是克隆时的旧 ref，脚本于是误判「远端无新提交」、
+    永远不更新——按钮看起来成功、实际什么都没做。
+    """
+    text = main._UPDATE_SCRIPT_SRC.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert ":refs/remotes/origin/$BRANCH" in code
+    assert 'rev-parse "origin/$BRANCH"' in code
+    # 且必须有「本地远端引用未被更新」的显式报错，不能静默跳过
+    assert "rev-parse FETCH_HEAD" in code
+    # venv 缺 pip 时，requirements 有变化也不能静默跳过安装
+    assert "ensurepip" in code
+
+
+def test_update_script_avoids_git_options_absent_in_old_git():
+    """脚本不得用 `git -C` / `git remote get-url`：服务器可能只有 CentOS 7 的老 git。
+
+    真实事故：CentOS 7 自带 git 1.8.3 不认识 `-C`，会打印 `Unknown option: -C`
+    并以 **129**（git 的用法错误码）退出，脚本当场中断、且几乎不留日志。
+    现改为先 `cd "$APP_DIR"` 再用普通 `git`，远程地址用 `git config --get`。
+    """
+    text = main._UPDATE_SCRIPT_SRC.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "git -C" not in code
+    assert "remote get-url" not in code
+    assert 'cd "$APP_DIR"' in code
+    # 早期失败必须留下「退出码 + 失败命令」，不能再出现无从排查的静默死亡
+    assert "trap " in code and "BASH_COMMAND" in code
+
+
 def test_gitignore_protects_runtime_files_from_update():
     """原地更新的前提：运行期文件必须被 .gitignore 忽略，否则 reset 会覆盖它们。"""
     gitignore = main._UPDATE_SCRIPT_SRC.parents[1] / ".gitignore"

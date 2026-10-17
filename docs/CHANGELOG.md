@@ -20,6 +20,26 @@
 - 无实际数据库结构变化；只读列表接口兼容增加上述字段，路由、参数、游标及错误语义保留。验证仅调用只读接口，未发送模拟日志或执行数据库迁移。
 - 验证：290 项 pytest 全部通过（完整权限，数据库连接隔离）；JS/Python 语法、环形图布局自检、32 项图表渲染场景及真实接口渲染通过。浏览器核验三类真实数据图表，并用模拟数据核验详情错误态、Esc 关闭与焦点恢复。
 
+### Fixed — 2026-10-16（更新单元在旧 git 上秒退 129，且日志无痕）
+
+- 现象：页面上点更新后，`journalctl -u log-fusion-update` 只有一行 `code=exited, status=129`，脚本自己的 `/var/log/log-fusion-update.log` **根本不存在**，完全看不出原因；服务本身未受影响（失败发生在停服之前）。
+- 根因：`deploy/update-log-fusion.sh` 全程使用 `git -C "$APP_DIR"`，而服务器上的 git 是 CentOS 7 自带的 **1.8.3**（`-C` 需要 ≥ 1.8.5）。git 遇到用法错误固定以 **129** 退出，所以第一条 `git -C` 就让脚本当场中断。
+- 日志为什么没留下：脚本用 `exec > >(tee -a "$LOG_FILE") 2>&1`，而 systemd 单元默认 `KillMode=control-group`——主进程一退出就把它派生的 `tee` 一起杀掉，日志文件甚至来不及创建，journal 里也没有输出。
+- 修复：
+  - 脚本改为**先 `cd "$APP_DIR"` 再用普通 `git`**，去掉全部 `git -C`；远程地址改用 `git config --get remote.origin.url`（`git remote get-url` 需要 git 2.7+）。
+  - 日志改为脚本**自己直接追加写文件**（不再用 `tee`），并加 `set -E` + `ERR` trap：任何未预期的失败都会在日志里留下**退出码和失败命令**。
+- 测试：新增 `test_update_script_avoids_git_options_absent_in_old_git`（断言代码中不含 `git -C` / `remote get-url`，且必须有 `cd "$APP_DIR"` 与 ERR trap），用例数 288 → 289。
+- 无实际数据库结构变化，无实际接口行为变化。
+
+### Fixed — 2026-10-16（更新脚本可能永远拉不到新代码）
+
+- 现象：服务器上 `git fetch --prune origin main` 明明成功、`git reset --hard origin/main` 却停在克隆时的旧提交（`HEAD is now at 6a36875`）。
+- 根因：refspec 只写 `origin main`（无冒号）时，是否顺带更新 `origin/main` 取决于该仓库有没有配 `remote.origin.fetch`；配置缺失时只写 `FETCH_HEAD`。而脚本随后用 `git rev-parse origin/main` 取新版本，读到的是克隆时的旧 ref → 判定「远端无新提交」→ **永不更新，页面按钮还看起来是成功的**（静默失效）。
+- 修复：`deploy/update-log-fusion.sh` 的 fetch refspec 显式写成 `+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH`，不再依赖仓库配置；并在 `NEW_HEAD == OLD_HEAD` 时用 `FETCH_HEAD` 交叉核对，不一致就报错中止而不是静默跳过（`docs/DEPLOY.md` §3 同步）。
+- 同类的静默跳过一并修掉：原来 `[ -x "$VENV_DIR/bin/pip" ]` 为假时，即使 `requirements.txt` 有变化也会**一声不响地跳过装依赖**（venv 用 `--without-pip` 建的就中招）。现在改为明确告警并提示 `python -m ensurepip --upgrade`。
+- 测试：新增 `test_update_script_fetches_into_remote_tracking_ref`，用例数 287 → 288。
+- 无实际数据库结构变化，无实际接口行为变化。
+
 ### Changed — 2026-10-16（启动仅补充最新安全日志，停止历史追补）
 
 - 用户确认现有历史导入量足够后，backend 固定使用 live_only 模式；不再调用三个月历史初始化或选择旧历史 pending。每次启动重设近期实时起点，后台默认开启，本机 .env 也已开启。
@@ -75,7 +95,6 @@
 - 实机确认 3.5.1 必须带 `conditionStr=[]`；省略返回 400/10000。带空条件查询最近 24 小时及 7 天均返回 200/0 条。3.5.2/3.5.3/3.5.4/3.5.6 均成功；3.5.5 缺少事件 ID 返回 400/28520，成功分支待真实事件验证。
 - 实测日志每页 1,000 条、连续两页共 2,000 条，两页无重复，分别约 5.9/7.5 秒。批量顺序请求、固定时间范围、默认间隔 0.2 秒，逐页落盘并记录 manifest，异常或部分结果时停止；没有自动执行百万条全量下载。
 - 新增 `security-log-client/docs/API.md` 说明运行方式、结果与分页边界。无实际数据库结构变化，无实际接口行为变化。
-
 ### Added — 2026-10-16（systemd 服务安装脚本，注册服务不再只有手工命令）
 
 - 新增 `deploy/install-service.sh`：把 `deploy/log-fusion.service` 安装到 `/etc/systemd/system/` 并 `daemon-reload` + `enable` + `restart` + 30 秒 `/health` 自检。**幂等**，可重复执行；单元内容有变化时先把旧文件备份成 `.bak` 再覆盖。执行前校验 root、`systemctl`、单元文件、`.venv/bin/python` 可执行、`backend/.env` 是否存在，并在 8080 被「非本服务的进程」占用时明确提示先停掉挂在 SSH 前台的 `run.py`。
