@@ -42,15 +42,15 @@ flowchart LR
 | `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置与归档策略（目录、保留月数、单批上限） | `get_settings()` 进程内缓存 |
 | `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
 | `backend/app/models.py` | 声明 `ClientStatus`、`LogHash`、`ArchiveLog` ORM 模型 | 覆盖平台心跳表、存证表与归档台账 |
-| `backend/app/catalog.py` | Linux/Windows 类别和 Linux 查询列 | 代码内静态元数据 |
-| `backend/app/services.py` | 分类查询（列表上限 100 / 导出上限 10000）、汇总、跨库最近日志合并 | 同步 SQL |
+| `backend/app/catalog.py` | Linux/Windows 类别、Linux 查询列与真实列、Windows 分类视图展示列 | 代码内静态元数据 |
+| `backend/app/services.py` | 分类查询（列表上限 100 / 导出上限 10000 / `full` 取整行）、汇总、跨库最近日志合并 | 同步 SQL |
 | `backend/app/metrics.py` | 图表聚合层：时间桶趋势与 TOP 排行（进程内 TTL 缓存）、心跳历史环形缓冲（watchdog 每 5 秒采样） | 进程内缓存/缓冲，单 worker，重启后心跳历史清零 |
 | `backend/app/parsers.py` | 原始日志 → 数据库行的解析（Linux auditd/syslog、Windows winlog），时间与列类型归一化 | 纯函数，无状态 |
 | `backend/app/hashing.py` | 原始日志存证：按 `sha256(时间戳 + 0x1F + 存证原文)` 计算摘要并构造 `log_hash` 行；Linux 原文取 `log` 字段，Windows 取整条记录的规范化 JSON | 纯函数，无状态 |
 | `backend/app/archive.py` | 存证归档：按条件选 id、分批取行、写 CSV 并校验落盘、按 id 删除、写归档台账 | 删除不可逆；文件落盘确认后才删 |
 | `backend/app/ws.py` | 维护浏览器 WebSocket 集合并广播快照 | 进程内，不跨 worker |
-| `dashboard.html` | 服务端页面骨架与四个功能区 | 根路由渲染 |
-| `frontend/app.js` | Alpine 页面状态、REST 调用、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
+| `dashboard.html` | 服务端页面骨架与功能区（含「融合日志管理」下 5 个分类日志子菜单、分类日志页与原始详情弹窗） | 根路由渲染 |
+| `frontend/app.js` | Alpine 页面状态、REST 调用、分类日志视图（分页/关键词/整行原始详情）、心跳 WebSocket 连接/重连/假死检测、概览环形图（实例复用 + 尺寸自适应 + 图例/图形分列）、CSV 客户端导出 | 浏览器内存；图表布局由 `tools/chart-layout-check.cjs` 自检 |
 | `启动服务.ps1` | 校验解释器、配置 PYTHONPATH、尝试开放防火墙、启动 Uvicorn | 默认 8080 |
 | `deploy/log-fusion.service` | systemd 单元：工作目录 `backend/`、`ExecStart=<venv>/python run.py`、`Restart=always` | 服务器部署用，见 `docs/DEPLOY.md` |
 | `deploy/install-service.sh` | 把上面的单元安装到 `/etc/systemd/system/`，做前置校验、`enable`、`restart` 与 `/health` 自检 | 一次性且幂等；单元改了重跑即可（服务名一致性由测试锁定） |

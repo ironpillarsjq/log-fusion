@@ -376,9 +376,15 @@ def log_summary():
 
 
 @app.get("/api/v1/logs/categories/{category}")
-def category_logs(category: str, platform: str = Query("Linux"), page: int = 1, size: int = 20, keyword: str | None = None):
+def category_logs(category: str, platform: str = Query("Linux"), page: int = 1, size: int = 20,
+                  keyword: str | None = None, full: bool = False):
+    """分类分页查询。
+
+    `full=true` 返回整行真实字段（含 Windows 的 `eventdata`），供「分类日志视图」的
+    原始详情弹窗使用；默认只返回列表展示列，保持原有响应行为不变。
+    """
     try:
-        return {"code": 0, "message": "ok", "data": query_category(category, platform, page, size, keyword)}
+        return {"code": 0, "message": "ok", "data": query_category(category, platform, page, size, keyword, full=full)}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

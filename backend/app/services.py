@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
-from .catalog import LINUX_CATEGORIES, WINDOWS_CATEGORIES, LINUX_TABLE_COLUMNS
+from .catalog import (
+    LINUX_CATEGORIES, WINDOWS_CATEGORIES, LINUX_TABLE_COLUMNS, LINUX_TABLE_FIELDS,
+    WINDOWS_TABLE_FIELDS, WINDOWS_VIEW_COLUMNS,
+)
 from .db import linux_engine, windows_engine, rows, one
 
 
@@ -23,17 +26,25 @@ def query_category(
     size: int = 20,
     keyword: str | None = None,
     size_cap: int = 100,
+    full: bool = False,
 ) -> dict:
     """分类分页查询。
 
     `size_cap` 是单次返回上限：分类列表接口用默认 100，CSV 导出传 10000，
     否则导出结果会被列表接口的上限静默截断成 100 行。
+
+    `full=True` 时返回**整行真实字段**，供「分类日志视图」的原始详情使用；
+    Linux 表没有统一主键，所以详情直接复用列表返回的整行，而不另开按 id 查询的接口。
+    `columns` 始终是表格应展示的列（与 `items` 里的字段子集对应）。
     """
     page, size = max(1, page), min(max(1, size_cap), max(1, size))
     category = _safe_name(category.lower())
     if platform.lower() == "windows":
         table = f"{category}_logs"
-        columns = ["id", "time_created", "event_id", "level", "channel", "computer", "provider_name", "eventdata", "imported_at"]
+        display = list(WINDOWS_VIEW_COLUMNS)
+        select = ["id", *WINDOWS_TABLE_FIELDS, "imported_at"] if full else [
+            "id", "time_created", "event_id", "level", "channel", "computer", "provider_name", "eventdata", "imported_at",
+        ]
         engine = windows_engine
         condition = ""
         params = {"limit": size, "offset": (page - 1) * size}
@@ -42,22 +53,27 @@ def query_category(
             params["keyword"] = f"%{keyword}%"
     else:
         table = category
-        columns = LINUX_TABLE_COLUMNS.get(category, ["event_time", "event_id", "category", "type", "result", "tips"])
+        display = LINUX_TABLE_COLUMNS.get(category, ["event_time", "event_id", "category", "type", "result", "tips"])
+        select = list(LINUX_TABLE_FIELDS.get(category, display)) if full else display
         engine = linux_engine
         condition = ""
         params = {"limit": size, "offset": (page - 1) * size}
         if keyword:
             # 只有实际存在的列能参与关键词匹配：process_command_execution、
             # file_object_access、security_policy_config_change 没有 hostname/
-            # source_address，硬拼这些列会让接口直接 500。
-            searchable = [field for field in ("hostname", "source_address", "type") if field in columns]
+            # source_address，硬拼这些列会让接口直接 500。关键词始终按**展示列**
+            # 决定可搜字段，full 模式不改变搜索语义。
+            searchable = [field for field in ("hostname", "source_address", "type") if field in display]
             if searchable:
                 condition = " WHERE " + " OR ".join(f"{field} LIKE :keyword" for field in searchable)
                 params["keyword"] = f"%{keyword}%"
-    selected = ", ".join(f"`{c}`" for c in columns)
+    selected = ", ".join(f"`{c}`" for c in select)
     total = one(engine, f"SELECT COUNT(*) AS n FROM `{table}`{condition}", params)["n"]
     data = rows(engine, f"SELECT {selected} FROM `{table}`{condition} ORDER BY 1 DESC LIMIT :limit OFFSET :offset", params)
-    return {"items": data, "page": page, "size": size, "total": total, "category": category, "platform": platform}
+    return {
+        "items": data, "columns": display, "page": page, "size": size,
+        "total": total, "category": category, "platform": platform,
+    }
 
 
 def summary() -> dict:

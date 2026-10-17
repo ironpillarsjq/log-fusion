@@ -25,6 +25,10 @@ LINUX_TABLE_COLUMNS = {
     "security_policy_config_change": ["event_time", "event_id", "category", "type", "action", "target", "executable", "result", "tips"],
 }
 
+# Windows 分类视图（「融合日志管理」下的 Application / Security 子菜单）表格展示列。
+# 完整字段（含 eventdata 原始 JSON）只在「原始详情」里展示，避免表格被大字段撑爆。
+WINDOWS_VIEW_COLUMNS = ("time_created", "event_id", "level", "provider_name", "computer", "channel")
+
 # 各表的真实列（2026-10-10 用 information_schema 只读核验，见 docs/DATABASE.md §4.3）。
 # 入库前必须据此裁剪字段，否则会出现 1054 Unknown column。
 LINUX_TABLE_FIELDS = {

@@ -298,3 +298,41 @@ def test_chart_self_check_tools_are_documented():
     for tool in ("chart-layout-check.cjs", "chart-render-check.cjs"):
         assert (TOOLS_DIR / tool).is_file(), f"缺少自检工具 {tool}"
         assert tool in DOCS_README.read_text(encoding="utf-8"), f"docs/README.md 未登记 {tool}"
+
+
+def test_log_category_submenus_cover_five_categories(dashboard_html, app_js):
+    """「融合日志管理」下必须有 5 个分类子菜单：Linux 3 类 + Windows 2 类。
+
+    子菜单由 `logCategoryPages()` 一处定义，导航与页面标题都从它取，
+    这样加分类时不会出现「导航有、页面没有」的错位。
+    """
+    block = app_js.split("logCategoryPages(){", 1)[1].split("}]", 1)[0]
+    for key, label in (
+        ("authentication_session", "认证会话"),
+        ("process_command_execution", "进程与命令执行"),
+        ("file_object_access", "文件对象访问"),
+        ("application", "Application"),
+        ("security", "Security"),
+    ):
+        assert f"key:'{key}'" in block, f"分类子菜单缺少 {key}"
+        assert label in block, f"分类子菜单缺少标签 {label}"
+    for page in ("log-linux-auth", "log-linux-process", "log-linux-file",
+                 "log-win-application", "log-win-security"):
+        assert f"page:'{page}'" in block, f"缺少分类页 {page}"
+    assert "logCategoryPages()" in dashboard_html, "导航未从 logCategoryPages() 渲染"
+    assert "isLogCategoryPage()" in dashboard_html and "isLogCategoryPage()" in app_js
+
+
+def test_log_category_rows_expose_raw_detail(dashboard_html, app_js):
+    """每一行最右侧必须有「原始详情」，弹窗展示整行 JSON。
+
+    Linux 表没有统一主键，所以详情复用列表返回的整行（`full=true`），
+    不另开按 id 查询的接口——见 docs/DECISIONS.md ADR-021。
+    """
+    assert "showCatDetail(row)" in dashboard_html
+    assert "原始详情" in dashboard_html
+    assert "catDetailDialog" in dashboard_html and "catDetailDialog" in app_js
+    assert "catDetail" in app_js and "JSON.stringify(row,null,2)" in app_js
+    assert "full:'true'" in app_js, "列表必须带 full=true，否则拿不到整行原始字段"
+    # 弹窗复用与存证/安全日志相同的 .log-detail-* 样式
+    assert "log-detail-code" in dashboard_html and "log-detail-dialog" in dashboard_html

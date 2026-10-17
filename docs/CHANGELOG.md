@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+### Added — 2026-10-16（「融合日志管理」新增 5 个分类日志子菜单）
+
+- 「融合日志管理」下新增 5 个子菜单：Linux 的**认证会话**、**进程与命令执行**、**文件对象访问**，以及 Windows 的 **Application**、**Security**。导航与页面标题都来自 `logCategoryPages()` 一处定义，避免出现「导航有、页面没有」的错位。
+- 新增分类日志页：按分类分页浏览（每页 30 条）、关键词查询、刷新；表头使用中文列名；最右侧固定「详情」列，每行一个「原始详情」按钮，弹窗展示**整行原始 JSON**——包括表格里没展示的 `pid`/`uid`/`session_id`/`terminal`，Windows 记录还包含 `eventdata`。弹窗复用存证与安全日志共用的 `.log-detail-*` 样式。
+- `GET /api/v1/logs/categories/{category}` 新增 `full=true`：返回整行真实字段（Linux 取 `LINUX_TABLE_FIELDS`，Windows 取 `WINDOWS_TABLE_FIELDS` + `id`/`imported_at`）；响应新增 `columns` 字段（表格展示列）。**默认行为与原有字段保持不变**。
+- 决策：Linux 日志表没有统一主键，因此不新增「按 id 查详情」接口，详情直接复用列表返回的整行（见 `docs/DECISIONS.md` ADR-021）。
+- 测试：新增 4 条 `test_services.py` 用例（full 取列、展示列不被撑开、默认行为不变、关键词语义不变）与 2 条前端契约用例（5 个子菜单、原始详情接线），实测 **298 passed**（文档此前记的 289 已滞后于远端提交，本次一并校正）。
+- 无实际数据库结构变化；接口变化仅为上述 `full` 查询参数与 `columns` 字段。
+
 ### Changed — 2026-10-17（分类图表改为事件与规则/威胁统计）
 
 - 按需求把三个分类页的两张图改为「事件信息统计」（event 环形图）及「规则 / 威胁类型统计」（ruleid + threat_type 组合条形图），仍只统计当前页最多 30 条记录，每条计 1。

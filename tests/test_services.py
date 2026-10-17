@@ -114,6 +114,44 @@ def test_windows_keyword_uses_windows_columns(captured):
     assert "event_id LIKE :keyword" in where
 
 
+# --- full 模式：分类日志视图的原始详情 -----------------------------------------
+
+def test_full_linux_selects_all_real_columns(captured):
+    result = services.query_category("file_object_access", "Linux", 1, 5, full=True)
+    sql = captured["rows"][0][0]
+    for field in ("pid", "ppid", "object_inode", "tips"):
+        assert f"`{field}`" in sql, f"full 模式应取回真实列 {field}"
+    # 表格展示列不能被整行撑开
+    assert result["columns"] == services.LINUX_TABLE_COLUMNS["file_object_access"]
+    assert "object_inode" not in result["columns"]
+
+
+def test_full_windows_selects_eventdata_and_metadata(captured):
+    result = services.query_category("application", "Windows", 1, 5, full=True)
+    sql = captured["rows"][0][0]
+    for field in ("`id`", "`eventdata`", "`security_user_id`", "`imported_at`"):
+        assert field in sql
+    assert result["columns"] == list(services.WINDOWS_VIEW_COLUMNS)
+    assert "eventdata" not in result["columns"], "eventdata 只应出现在原始详情里"
+
+
+def test_default_list_keeps_existing_columns(captured):
+    """默认（非 full）保持原有列表行为：不能把整行字段都塞进列表响应。"""
+    result = services.query_category("security", "Windows", 1, 5)
+    sql = captured["rows"][0][0]
+    assert "`source_file`" not in sql
+    assert "`eventdata`" in sql, "现有列表本来就带 eventdata，不能被这次改动去掉"
+    assert result["columns"] == list(services.WINDOWS_VIEW_COLUMNS)
+
+
+def test_full_keyword_search_still_uses_display_columns(captured):
+    """full 只影响取哪些列，不改变关键词能匹配的字段。"""
+    services.query_category("file_object_access", "Linux", 1, 5, keyword="x", full=True)
+    where = _where(captured["rows"][0][0])
+    assert "type LIKE :keyword" in where
+    assert "hostname" not in where
+
+
 # --- /recent 缺列 NULL 占位 ---------------------------------------------------
 
 RECENT_FIELDS = ("event_time", "category", "type", "result", "hostname", "source_address")

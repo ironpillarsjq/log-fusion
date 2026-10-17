@@ -4,6 +4,11 @@ function dashboard() {
     page:'overview',navLogsOpen:false,navSecurityOpen:false,clock:'',
     securitySummary:null,securityRows:[],securityType:'ipslog',securityBefore:null,securityNext:null,securityBack:[],securityDetail:'',securityError:'',securityBusy:false,securityTimer:null,securityUpdated:'',
     securityDetailOpen:false,securityDetailBusy:false,securityDetailError:'',securityDetailId:null,securityDetailRequest:0,
+    // 「融合日志管理」分类日志视图：5 个子菜单共用一套页面状态（列表带整行，供原始详情使用）
+    catLogs:[],catColumns:[],catTotal:0,catPage:1,catPages:1,catKeyword:'',catBusy:false,catError:'',
+    catDetailOpen:false,catDetail:'',
+    // 分类日志表格的中文列名；未登记的列原样显示列名
+    CAT_COLUMN_LABELS:{event_time:'事件时间',event_id:'事件 ID',category:'类别',type:'类型',pid:'PID',ppid:'PPID',uid:'UID',auid:'AUID',session_id:'会话 ID',operation:'操作',account:'账号',executable:'可执行文件',hostname:'主机名',source_address:'源地址',terminal:'终端',result:'结果',tips:'说明',command:'命令',object_path:'对象路径',object_inode:'inode',action:'动作',time_created:'事件时间',level:'级别',provider_name:'提供程序',computer:'计算机',channel:'通道',imported_at:'入库时间'},
     summary:{total:0,by_platform:{Linux:0,Windows:0},categories:[]},categories:[],clients:[],logs:[],evidence:[],logKeys:[],logPlatform:'Linux',logCategory:'authentication_session',keyword:'',heartbeatMetrics:[],evidenceMetrics:[],overviewMetrics:[],
     // 心跳计数：WebSocket 快照与 REST 降级共用同一份（图表与指标都从这里取数）
     hbCounts:{total:0,online:0,delayed:0,offline:0},
@@ -90,18 +95,35 @@ function dashboard() {
     securityPage(){return this.securityPages().find(p=>p.page===this.page)||this.securityPages()[0]},
     securityCurrentTypes(){return (this.securitySummary?.types||[]).filter(t=>t.type===this.securityType)},
     securityValue(value){return value===null||value===undefined||value===''?'—':String(value)},
+    logCategoryPages(){return [
+      {page:'log-linux-auth',platform:'Linux',key:'authentication_session',label:'认证会话',hint:'Linux · 认证会话类'},
+      {page:'log-linux-process',platform:'Linux',key:'process_command_execution',label:'进程与命令执行',hint:'Linux · 进程与命令执行类'},
+      {page:'log-linux-file',platform:'Linux',key:'file_object_access',label:'文件对象访问',hint:'Linux · 文件对象访问类'},
+      {page:'log-win-application',platform:'Windows',key:'application',label:'Application',hint:'Windows · Application 类'},
+      {page:'log-win-security',platform:'Windows',key:'security',label:'Security',hint:'Windows · Security 类'}
+    ]},
+    isLogCategoryPage(){return this.logCategoryPages().some(x=>x.page===this.page)},
+    logCategoryPage(){return this.logCategoryPages().find(x=>x.page===this.page)||this.logCategoryPages()[0]},
     pageFromHash(){
       const raw=String(location.hash||'').replace(/^#\/?/,'');
       if(raw==='security')return 'security-ips'; // 保留旧链接入口
-      return ['overview','heartbeat','logs','log-stats','evidence','maintenance',...this.securityPages().map(p=>p.page)].includes(raw)?raw:'';
+      return ['overview','heartbeat','logs','log-stats','evidence','maintenance',
+              ...this.logCategoryPages().map(p=>p.page),
+              ...this.securityPages().map(p=>p.page)].includes(raw)?raw:'';
     },
     go(p,silent){
       if(p==='security')p='security-ips';
       const security=this.securityPages().find(item=>item.page===p);
-      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(p)&&!security)return;
-      if(this.page!==p)this.closeSecurityDetail();
+      const category=this.logCategoryPages().find(item=>item.page===p);
+      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(p)&&!security&&!category)return;
+      if(this.page!==p){
+        this.closeSecurityDetail();
+        this.closeCatDetail();
+        // 换页即清空分类视图的状态：不同分类的表格列、页码、关键词都不通用
+        this.catPage=1;this.catKeyword='';this.catLogs=[];this.catColumns=[];this.catTotal=0;this.catPages=1;this.catError='';
+      }
       this.page=p;
-      if(p==='logs'||p==='log-stats')this.navLogsOpen=true;
+      if(p==='logs'||p==='log-stats'||category)this.navLogsOpen=true;
       if(security){
         this.navSecurityOpen=true;
         if(this.securityType!==security.type){
@@ -121,6 +143,7 @@ function dashboard() {
       else if(p==='logs'){this.loadLogs()}
       else if(p==='log-stats'){this.loadLogStats()}
       else if(p==='evidence'){this.loadEvidence()}
+      else if(this.isLogCategoryPage()){this.loadLogCategory()}
       else if(this.isSecurityPage()){this.loadSecurity()}
       this.afterPaint(()=>this.redrawVisible());
     },
@@ -1021,6 +1044,51 @@ function dashboard() {
         if(request===this.securityDetailRequest&&this.securityDetailOpen&&kind===this.securityType)this.securityDetail=JSON.stringify(record,null,2);
       }catch(e){if(request===this.securityDetailRequest&&this.securityDetailOpen)this.securityDetailError='日志详情读取失败：'+e.message}
       finally{if(request===this.securityDetailRequest)this.securityDetailBusy=false}
+    },
+
+    /* ===== 融合日志管理 · 分类日志视图（Linux 3 类 + Windows 2 类）=========== */
+    // Linux 表没有统一主键，所以不另开「按 id 查详情」的接口：列表用 full=true
+    // 一次取回整行，详情弹窗直接展示该行 JSON（决策见 docs/DECISIONS.md ADR-021）。
+    catCell(value){
+      if(value===null||value===undefined||value==='')return '—';
+      return typeof value==='object'?JSON.stringify(value):String(value);
+    },
+    catTimeColumn(key){return key==='event_time'||key==='time_created'||key==='imported_at'},
+    catColumnLabel(key){return this.CAT_COLUMN_LABELS[key]||key},
+    catCellText(row,key){
+      const value=row[key];
+      if(this.catTimeColumn(key)&&value)return this.fmtTime(value);
+      return this.catCell(value);
+    },
+    async loadLogCategory(){
+      if(!this.isLogCategoryPage())return;
+      const item=this.logCategoryPage();
+      this.catBusy=true;this.catError='';
+      try{
+        const q=new URLSearchParams({
+          platform:item.platform,page:this.catPage,size:this.PAGE_SIZE,
+          keyword:this.catKeyword,full:'true',
+        });
+        const d=await this.api(`/api/v1/logs/categories/${item.key}?`+q.toString());
+        this.catLogs=d.items||[];this.catColumns=d.columns||[];
+        this.catTotal=Number(d.total||0);
+        this.catPages=Math.max(1,Math.ceil(this.catTotal/this.PAGE_SIZE));
+      }catch(e){
+        this.catError=e&&e.message?e.message:'加载失败';this.catLogs=[];
+        this.warn('分类日志加载失败',e);
+      }finally{this.catBusy=false}
+    },
+    searchCatLogs(){this.catPage=1;return this.loadLogCategory()},
+    gotoCatPage(p){if(p<1||p>this.catPages||p===this.catPage)return;this.catPage=p;return this.loadLogCategory()},
+    showCatDetail(row){
+      this.catDetail=JSON.stringify(row,null,2);this.catDetailOpen=true;
+      const dialog=this.$refs?.catDetailDialog;
+      if(dialog&&!dialog.open)dialog.showModal();
+    },
+    closeCatDetail(){
+      this.catDetailOpen=false;this.catDetail='';
+      const dialog=this.$refs?.catDetailDialog;
+      if(dialog?.open)dialog.close();
     }
   }
 }

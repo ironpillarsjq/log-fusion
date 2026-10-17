@@ -158,6 +158,10 @@
 | `page` | integer | `1` | 内部小于 1 时改为 1 |
 | `size` | integer | `20` | 内部限制到 1～100 |
 | `keyword` | string/null | null | Windows 匹配 computer/provider/event_id；Linux 匹配 hostname/source_address/type |
+| `full` | boolean | `false` | `true` 时返回整行真实字段（Linux 取 `LINUX_TABLE_FIELDS`，Windows 取 `WINDOWS_TABLE_FIELDS` + `id`/`imported_at`，含 `eventdata`），供分类日志视图的「原始详情」使用；默认只返回列表展示列 |
+
+响应里的 `columns` 是**表格应展示的列**（Linux 取 `LINUX_TABLE_COLUMNS`，Windows 取 `WINDOWS_VIEW_COLUMNS`）。
+`items` 在 `full=true` 时包含 `columns` 之外的字段——这些字段只给原始详情弹窗用，不要拿去渲染表格。
 
 示例：
 
@@ -189,7 +193,8 @@ GET /api/v1/logs/categories/authentication_session?platform=Linux&page=1&size=20
     "size": 20,
     "total": 1,
     "category": "authentication_session",
-    "platform": "Linux"
+    "platform": "Linux",
+    "columns": ["event_time", "event_id", "category", "type", "operation", "account", "executable", "hostname", "source_address", "result", "tips"]
   }
 }
 ```
