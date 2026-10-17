@@ -18,8 +18,11 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
-from .catalog import LINUX_CATEGORIES, LINUX_TABLE_COLUMNS, WINDOWS_CATEGORIES
-from .db import linux_engine, rows, windows_engine
+from .catalog import (
+    LINUX_CATEGORIES, LINUX_TABLE_COLUMNS, LINUX_TYPE_LABELS, WINDOWS_CATEGORIES, WINDOWS_EVENT_LABELS,
+)
+from .db import linux_engine, one, rows, windows_engine
+from .services import _safe_name
 
 # --- 时间窗口 / 分桶 -----------------------------------------------------------
 
@@ -325,3 +328,84 @@ def heartbeat_history(minutes: int = 15) -> dict:
         "points": points,
         "clients": clients,
     }
+
+
+# --- 分类日志的事件维度统计 -----------------------------------------------------
+
+EVENT_STATS_CACHE_TTL_SECONDS = 60
+EVENT_STATS_MAX_LIMIT = 10
+
+
+def _event_group_expression(platform: str) -> str:
+    """事件维度取哪一列。
+
+    Windows 的 `event_id` 是稳定的事件编号（Application 145 类 / Security 51 类），
+    统计有意义；Linux 的 `event_id` 是审计流水号（实测认证会话表 16.9 万行里有
+    16.96 万个不同值，最大一类只有 3 条），按它画图没有意义——所以 Linux 用
+    审计记录类型 `type` 作为事件维度。
+    """
+    return "event_id" if platform.lower() == "windows" else "type"
+
+
+def _event_stats_payload(engine, table: str, group: str, limit: int) -> dict:
+    total = one(engine, f"SELECT COUNT(*) AS n FROM `{table}`")["n"]
+    distinct = one(engine, f"SELECT COUNT(DISTINCT `{group}`) AS n FROM `{table}`")["n"]
+    top = rows(
+        engine,
+        f"SELECT `{group}` AS k, COUNT(*) AS n FROM `{table}` "
+        f"GROUP BY `{group}` ORDER BY n DESC, k LIMIT :limit",
+        {"limit": limit},
+    )
+    # Application 通道里同一个 event_id 的语义随 provider 变化，未收录编号时
+    # 用该编号下最常见的 provider_name 作说明——这是数据事实，不是推测。
+    providers: dict[str, str] = {}
+    if group == "event_id":
+        ids = [str(item["k"]) for item in top if item["k"] is not None]
+        if ids:
+            params = {f"id{index}": value for index, value in enumerate(ids)}
+            placeholders = ", ".join(f":id{index}" for index in range(len(ids)))
+            for item in rows(
+                engine,
+                f"SELECT event_id AS k, provider_name AS p, COUNT(*) AS n FROM `{table}` "
+                f"WHERE event_id IN ({placeholders}) "
+                f"GROUP BY event_id, provider_name ORDER BY n DESC",
+                params,
+            ):
+                providers.setdefault(str(item["k"]), item["p"] or "")
+    items = []
+    for item in top:
+        key = "（空）" if item["k"] is None else str(item["k"])
+        if group == "event_id":
+            label = WINDOWS_EVENT_LABELS.get(key, "") or providers.get(key, "")
+        else:
+            label = LINUX_TYPE_LABELS.get(key, "")
+        items.append({"key": key, "label": label, "count": item["n"]})
+    shown = sum(item["count"] for item in items)
+    listed = sum(1 for item in items if item["key"] != "（空）")
+    return {
+        "groupBy": group,
+        "total": total,
+        "distinct": distinct,
+        "items": items,
+        "rest": {"types": max(0, distinct - listed), "count": max(0, total - shown)},
+        "generatedAt": _iso(_now_utc()),
+    }
+
+
+def category_event_stats(category: str, platform: str, limit: int = EVENT_STATS_MAX_LIMIT) -> dict:
+    """分类日志的事件维度统计（饼图 / 横向柱状图共用）。
+
+    `limit` 上限固定为 10：需求要求两张图最多展示 10 个事件类型。
+    """
+    category = _safe_name(category.lower())
+    limit = min(max(1, limit), EVENT_STATS_MAX_LIMIT)
+    windows = platform.lower() == "windows"
+    table = f"{category}_logs" if windows else category
+    engine = windows_engine if windows else linux_engine
+    group = _event_group_expression(platform)
+    payload, cached, age_ms = _cached(
+        f"event-stats:{platform.lower()}:{table}:{limit}",
+        EVENT_STATS_CACHE_TTL_SECONDS,
+        lambda: _event_stats_payload(engine, table, group, limit),
+    )
+    return {**payload, "cached": cached, "ageMs": age_ms}

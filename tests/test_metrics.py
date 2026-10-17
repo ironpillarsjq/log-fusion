@@ -221,3 +221,63 @@ def test_watchdog_feeds_history_buffer():
     import inspect
 
     assert "record_sample" in inspect.getsource(main._status_watchdog)
+
+
+# --- 分类日志的事件维度统计 -----------------------------------------------------
+
+@pytest.fixture
+def event_stats_db(monkeypatch):
+    """替换 metrics 的数据访问层：记录 SQL，并按查询形状返回固定结果。"""
+    calls = {"one": [], "rows": []}
+
+    def fake_one(engine, sql, params=None):
+        calls["one"].append(sql)
+        return {"n": 7} if "DISTINCT" in sql else {"n": 100}
+
+    def fake_rows(engine, sql, params=None):
+        calls["rows"].append((sql, dict(params or {})))
+        if "provider_name" in sql:
+            return [{"k": 4107, "p": "Microsoft-Windows-Example", "n": 40}]
+        if "`event_id` AS k" in sql:
+            return [{"k": 4107, "n": 40}, {"k": 4624, "n": 30}, {"k": None, "n": 5}]
+        return [{"k": "SYSLOG", "n": 80}, {"k": "USER_AUTH", "n": 20}]
+
+    monkeypatch.setattr(metrics, "one", fake_one)
+    monkeypatch.setattr(metrics, "rows", fake_rows)
+    return calls
+
+
+def test_event_stats_windows_groups_by_event_id(event_stats_db):
+    data = metrics.category_event_stats("application", "Windows")
+    assert data["groupBy"] == "event_id"
+    assert [item["key"] for item in data["items"]] == ["4107", "4624", "（空）"]
+    # 未收录编号回退到该事件最常见的 provider：这是数据事实，不臆造含义
+    assert data["items"][0]["label"] == "Microsoft-Windows-Example"
+    assert data["items"][1]["label"] == "登录成功"
+    assert data["items"][2]["label"] == ""
+
+
+def test_event_stats_linux_groups_by_type(event_stats_db):
+    """Linux 的 event_id 是审计流水号，事件维度必须用 type。"""
+    data = metrics.category_event_stats("authentication_session", "Linux")
+    assert data["groupBy"] == "type"
+    assert data["items"][0] == {"key": "SYSLOG", "label": "系统日志", "count": 80}
+    assert data["items"][1]["label"] == "用户认证"
+    assert all("`type`" in sql for sql, _ in event_stats_db["rows"])
+
+
+def test_event_stats_limit_is_capped_at_ten(monkeypatch):
+    """需求：饼图/柱状图最多展示 10 类，接口也不允许超出。"""
+    seen = {}
+    monkeypatch.setattr(metrics, "one", lambda engine, sql, params=None: {"n": 1})
+
+    def fake_rows(engine, sql, params=None):
+        if "provider_name" in sql:
+            return []
+        seen["limit"] = params["limit"]
+        return []
+
+    monkeypatch.setattr(metrics, "rows", fake_rows)
+    metrics.category_event_stats("security", "Windows", limit=50)
+    assert metrics.EVENT_STATS_MAX_LIMIT == 10
+    assert seen["limit"] == 10

@@ -283,3 +283,19 @@
   - `items` 的字段集合与 `columns` 不再一致：渲染表格必须用 `columns`，不要用 `Object.keys(item)`，否则 Windows 的 `eventdata` 会挤进表格。
   - 详情是**打开列表那一刻的快照**；刷新列表后才能看到该行最新内容（日志表只追加，实际影响可忽略）。
 - 备选与否决：方案① 对 Windows 可行、对 Linux 不可行；为两个平台维护两套详情机制不划算，故否决。
+
+## ADR-023：分类日志的事件维度在 Linux 侧用 type，而不是 event_id（2026-10-16）
+
+- 状态：已采用
+- 背景：分类日志页需要按「事件 ID」统计并画饼图 / 横向柱状图。实测（2026-10-16，本机库）：
+  - `authentication_session` 169,746 行 / **169,690** 个不同 `event_id`，最大一类 3 条；
+  - `process_command_execution` 50,067 行 / 8,440 个，最大 9 条；
+  - `file_object_access` 51,247 行 / 8,412 个，最大 18 条；
+  - `application_logs` 119,852 行 / 145 个，最大 31,958 条；`security_logs` 197,494 行 / 51 个，最大 68,059 条。
+- 决策：Windows 两张表按 `event_id` 分组；Linux 三张表按审计记录类型 `type` 分组。响应里的 `groupBy` 明示实际分组列。
+- 原因：Linux 的 `event_id` 是审计流水号（几乎每行唯一），按它统计得到的图没有信息量；`type`（SYSLOG / USER_AUTH / EXECVE / PROCTITLE …）才是 Linux 侧稳定的事件类型。
+- 后果：
+  - Linux 三页的图标题是「事件类型统计」，Windows 两页是「事件 ID 统计」，口径不混淆；
+  - 图例说明：`catalog.WINDOWS_EVENT_LABELS` / `LINUX_TYPE_LABELS` 收录常见编号；Application 未收录的编号回退到该编号下最常见的 `provider_name`；都没有时只显示编号，不臆造含义；
+  - 两张图最多 10 类，其余在 `rest` 里给出类数与条数（页面注明「另有 N 类未展示」）。
+- 备选与否决：严格按 `event_id` 统计三张 Linux 表——实测前 10 类各只有 3～18 条，属于无意义图表，否决。

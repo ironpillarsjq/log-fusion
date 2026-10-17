@@ -336,3 +336,20 @@ def test_log_category_rows_expose_raw_detail(dashboard_html, app_js):
     assert "full:'true'" in app_js, "列表必须带 full=true，否则拿不到整行原始字段"
     # 弹窗复用与存证/安全日志相同的 .log-detail-* 样式
     assert "log-detail-code" in dashboard_html and "log-detail-dialog" in dashboard_html
+
+
+def test_log_category_event_charts_show_ten_labelled_types(dashboard_html, app_js):
+    """分类页必须有饼图 + 横向柱状图，最多 10 类，图例里带事件说明。"""
+    assert 'id="cat-pie-chart" class="chart-md"' in dashboard_html
+    assert 'id="cat-bar-chart" class="chart-md"' in dashboard_html
+    for chart_id in ("cat-pie-chart", "cat-bar-chart"):
+        assert f"paint('{chart_id}'" in app_js, f"{chart_id} 没有被绘制"
+    assert "/event-stats" in app_js, "未接事件统计接口"
+    # 图例文字 = 编号 + " · " + 说明（未收录时只显示编号）
+    assert "item.label?item.key+' · '+item.label:item.key" in app_js
+    assert "limit:'10'" in app_js, "请求必须限定最多 10 类"
+    # Windows 按 event_id、Linux 按 type 的分流由后端 groupBy 决定
+    assert "groupBy==='event_id'" in app_js
+    # 横向柱状图：类目轴 + bar 系列
+    assert "type:'category'" in app_js and "type:'bar'" in app_js
+    assert "type:'pie'" in app_js

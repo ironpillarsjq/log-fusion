@@ -24,7 +24,7 @@ from .config import get_settings
 from .db import Base, db_health, hash_engine, linux_engine, monitor_engine, windows_engine, MonitorSessionLocal, one, rows
 from .models import ClientStatus, LogHash
 from .services import categories, query_category, summary, recent_rows
-from .metrics import heartbeat_history, logs_stats, logs_trend, record_sample
+from .metrics import category_event_stats, heartbeat_history, logs_stats, logs_trend, record_sample
 from .parsers import normalize_linux, normalize_windows, windows_table_for
 from .hashing import build_evidence_row
 from .archive import archive_evidence, archive_root, months_ago
@@ -385,6 +385,19 @@ def category_logs(category: str, platform: str = Query("Linux"), page: int = 1, 
     """
     try:
         return {"code": 0, "message": "ok", "data": query_category(category, platform, page, size, keyword, full=full)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/v1/logs/categories/{category}/event-stats")
+def category_event_stats_api(category: str, platform: str = Query("Linux"), limit: int = Query(10, ge=1, le=10)):
+    """分类日志的事件维度统计（饼图 + 横向柱状图）。
+
+    Windows 按 `event_id` 分组；Linux 的 `event_id` 是审计流水号，改按 `type` 分组
+    （原因见 `metrics._event_group_expression`）。`limit` 固定上限 10。
+    """
+    try:
+        return {"code": 0, "message": "ok", "data": category_event_stats(category, platform, limit)}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

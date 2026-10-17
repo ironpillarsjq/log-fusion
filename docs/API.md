@@ -26,6 +26,7 @@
 | GET | `/api/v1/logs/categories` | JSON | 日志类别 |
 | GET | `/api/v1/logs/summary` | JSON | 日志总量与分类统计 |
 | GET | `/api/v1/logs/categories/{category}` | JSON | 分类分页查询 |
+| GET | `/api/v1/logs/categories/{category}/event-stats` | JSON | 分类日志的事件维度统计（饼图 / 横向柱状图） |
 | GET | `/api/v1/logs/recent` | JSON | 跨平台最近日志 |
 | GET | `/api/v1/logs/trend` | JSON | 时间桶接入趋势（UTC 桶键，服务端 TTL 缓存） |
 | GET | `/api/v1/logs/stats` | JSON | 窗口内 TOP 类别 / TOP 主机排行（服务端缓存） |
@@ -302,6 +303,38 @@ GET /api/v1/logs/categories/authentication_session?platform=Linux&page=1&size=20
 - 口径是**窗口内**计数（`event_time`/`time_created >= now - range`），与 `/logs/summary` 的全表口径不同，二者不可混用。
 - `topHosts` 只查实际拥有主机列的表：Linux 三张带 `hostname` 的表（`DATABASE.md` §4.3）+ Windows 五张 `computer` 表，NULL/空值主机被排除，两平台同名主机合并计数。
 - TTL 缓存 60 秒；查询失败返回 500。
+
+### 4.8 `GET /api/v1/logs/categories/{category}/event-stats`
+
+分类日志页的事件维度统计，为饼图与横向柱状图供数（2026-10-16 新增）。
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `platform` | string | `Linux` | 只有大小写不敏感的 `windows` 走 Windows 表 |
+| `limit` | integer | `10` | 1～10（**上限固定 10**：两张图最多展示 10 类），越界返回 422 |
+
+**分组列**：Windows 按 `event_id`；Linux 的 `event_id` 是审计流水号（实测认证会话表 16.9 万行里有 16.96 万个不同值，最大一类只有 3 条），因此改按审计记录类型 `type` 分组，响应里的 `groupBy` 会写明实际用了哪一列（见 ADR-023）。
+
+```json
+{
+  "code": 0, "message": "ok",
+  "data": {
+    "groupBy": "event_id",
+    "total": 197494,
+    "distinct": 51,
+    "items": [
+      {"key": "5379", "label": "读取凭据管理器", "count": 68059},
+      {"key": "4107", "label": "Microsoft-Windows-…", "count": 31726}
+    ],
+    "rest": {"types": 41, "count": 20000},
+    "generatedAt": "2026-10-16T…Z", "cached": false, "ageMs": 0
+  }
+}
+```
+
+- `label` 是图例里的说明：优先用 `catalog.py` 收录的事件编号字典；未收录的 **Application 事件**回退到该编号下最常见的 `provider_name`（数据事实，不臆造含义）；两者都没有时为空串，前端只显示编号。
+- `items` 最多 `limit` 条；`rest` 给出未展示的类数与条数，页面会注明「另有 N 类未展示（最多展示 10 类）」。
+- TTL 缓存 60 秒，响应带 `cached`/`ageMs`/`generatedAt`；查询失败返回 500。
 
 ## 5. 日志采集
 

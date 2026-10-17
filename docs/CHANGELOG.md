@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+### Added — 2026-10-16（分类日志按事件维度统计：饼图 + 横向柱状图）
+
+- 5 个分类日志页各新增两张图：**事件分布饼图**与**横向柱状图**，最多展示 **10 类**；图例/类目轴标签格式为「编号 · 说明」，下方注明「另有 N 类共 M 条未展示」。
+- **分组口径**：Windows 按 `event_id`（Application 145 类 / Security 51 类）；Linux 的 `event_id` 是审计流水号（认证会话 169,746 行里有 169,690 个不同值，最大一类仅 3 条），改按审计记录类型 `type` 分组（见 ADR-023），图标题相应显示「事件类型统计」。
+- 图例说明来源：`catalog.WINDOWS_EVENT_LABELS` / `LINUX_TYPE_LABELS` 收录的常见编号；**Application 未收录的编号回退显示该编号下最常见的 provider_name**（数据事实，不臆造含义）；都没有时只显示编号。
+- 新增接口 `GET /api/v1/logs/categories/{category}/event-stats`：`limit` 1～10（越界 422），返回 `groupBy`/`total`/`distinct`/`items`/`rest` 与 `generatedAt`/`cached`/`ageMs`；TTL 缓存 60 秒。
+- 测试：新增 3 条 `test_metrics.py` 用例（Windows 按 event_id、Linux 按 type、limit 上限 10）、3 条主契约参数校验、1 条前端契约（两个图表容器 + 图例说明 + limit=10），实测 **305 passed**。
+- 无实际数据库结构变化；接口变化为新增上述一条路由。
+
 ### Added — 2026-10-16（「融合日志管理」新增 5 个分类日志子菜单）
 
 - 「融合日志管理」下新增 5 个子菜单：Linux 的**认证会话**、**进程与命令执行**、**文件对象访问**，以及 Windows 的 **Application**、**Security**。导航与页面标题都来自 `logCategoryPages()` 一处定义，避免出现「导航有、页面没有」的错位。

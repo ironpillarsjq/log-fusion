@@ -6,6 +6,7 @@ function dashboard() {
     securityDetailOpen:false,securityDetailBusy:false,securityDetailError:'',securityDetailId:null,securityDetailRequest:0,
     // 「融合日志管理」分类日志视图：5 个子菜单共用一套页面状态（列表带整行，供原始详情使用）
     catLogs:[],catColumns:[],catTotal:0,catPage:1,catPages:1,catKeyword:'',catBusy:false,catError:'',
+    catStats:null,catStatsBusy:false,
     catDetailOpen:false,catDetail:'',
     // 分类日志表格的中文列名；未登记的列原样显示列名
     CAT_COLUMN_LABELS:{event_time:'事件时间',event_id:'事件 ID',category:'类别',type:'类型',pid:'PID',ppid:'PPID',uid:'UID',auid:'AUID',session_id:'会话 ID',operation:'操作',account:'账号',executable:'可执行文件',hostname:'主机名',source_address:'源地址',terminal:'终端',result:'结果',tips:'说明',command:'命令',object_path:'对象路径',object_inode:'inode',action:'动作',time_created:'事件时间',level:'级别',provider_name:'提供程序',computer:'计算机',channel:'通道',imported_at:'入库时间'},
@@ -120,7 +121,7 @@ function dashboard() {
         this.closeSecurityDetail();
         this.closeCatDetail();
         // 换页即清空分类视图的状态：不同分类的表格列、页码、关键词都不通用
-        this.catPage=1;this.catKeyword='';this.catLogs=[];this.catColumns=[];this.catTotal=0;this.catPages=1;this.catError='';
+        this.catPage=1;this.catKeyword='';this.catLogs=[];this.catColumns=[];this.catTotal=0;this.catPages=1;this.catError='';this.catStats=null;
       }
       this.page=p;
       if(p==='logs'||p==='log-stats'||category)this.navLogsOpen=true;
@@ -143,7 +144,7 @@ function dashboard() {
       else if(p==='logs'){this.loadLogs()}
       else if(p==='log-stats'){this.loadLogStats()}
       else if(p==='evidence'){this.loadEvidence()}
-      else if(this.isLogCategoryPage()){this.loadLogCategory()}
+      else if(this.isLogCategoryPage()){this.loadLogCategory();this.loadCatStats()}
       else if(this.isSecurityPage()){this.loadSecurity()}
       this.afterPaint(()=>this.redrawVisible());
     },
@@ -153,6 +154,7 @@ function dashboard() {
       if(this.page==='overview'){this.drawChart();this.drawOverviewTrend();this.drawPlatformGauge()}
       else if(this.page==='heartbeat')this.drawHeartbeatCharts();
       else if(this.page==='log-stats')this.drawStatsAll();
+      else if(this.isLogCategoryPage())this.drawCatCharts();
       else if(this.isSecurityPage())this.drawSecurityCharts();
     },
 
@@ -1089,6 +1091,65 @@ function dashboard() {
       this.catDetailOpen=false;this.catDetail='';
       const dialog=this.$refs?.catDetailDialog;
       if(dialog?.open)dialog.close();
-    }
+    },
+
+    /* ===== 分类日志的事件维度统计（饼图 + 横向柱状图）======================= */
+    // Windows 按 event_id；Linux 的 event_id 是审计流水号，后端已改为按 type 统计。
+    catStatTitle(){return this.catStats?.groupBy==='event_id'?'事件 ID 统计':'事件类型统计'},
+    catStatSubtitle(){
+      const s=this.catStats;if(!s)return '正在统计…';
+      return '共 '+this.fmt(s.total)+' 条 · 展示前 '+s.items.length+' 类';
+    },
+    catStatsFreshness(){
+      if(!this.catStats)return '';
+      return this.catStats.cached?'缓存 '+this.catStats.ageMs+'ms':'实时';
+    },
+    catRestNote(){
+      const rest=this.catStats?.rest;
+      if(!rest||!rest.types)return '已覆盖全部事件类型';
+      return '另有 '+this.fmt(rest.types)+' 类共 '+this.fmt(rest.count)+' 条未展示（最多展示 10 类）';
+    },
+    catStatNames(){
+      return (this.catStats?.items||[]).map(item=>item.label?item.key+' · '+item.label:item.key);
+    },
+    drawCatCharts(){
+      const stats=this.catStats;
+      if(!this.isLogCategoryPage()||!stats||!stats.items||!stats.items.length)return;
+      const names=this.catStatNames();
+      const values=stats.items.map(item=>item.count);
+      this.paint('cat-pie-chart',{
+        tooltip:{trigger:'item',formatter:'{b}<br/>{c} 条（{d}%）'},
+        legend:{type:'scroll',orient:'vertical',right:0,top:'middle',
+                textStyle:{fontSize:11,width:170,overflow:'truncate'}},
+        series:[{name:this.catStatTitle(),type:'pie',radius:['40%','66%'],center:['36%','50%'],
+                 data:names.map((name,index)=>({name:name,value:values[index]})),
+                 label:{show:false},labelLine:{show:false},
+                 emphasis:{scale:true,scaleSize:6,label:{show:false}}}]
+      });
+      // 类目轴自下而上排列，反转后最大值在顶部，读起来更符合排行直觉
+      this.paint('cat-bar-chart',{
+        grid:{left:8,right:64,top:12,bottom:8,containLabel:true},
+        tooltip:{trigger:'axis',axisPointer:{type:'shadow'},
+                 formatter:params=>params[0].name+'<br/>'+params[0].value+' 条'},
+        xAxis:{type:'value',splitLine:{lineStyle:{color:'#eef2f8'}}},
+        yAxis:{type:'category',data:names.slice().reverse(),
+               axisLabel:{fontSize:11,width:170,overflow:'truncate'},axisTick:{show:false}},
+        series:[{name:this.catStatTitle(),type:'bar',data:values.slice().reverse(),barMaxWidth:16,
+                 label:{show:true,position:'right',color:'#5f6e85',fontSize:11},
+                 itemStyle:{borderRadius:[0,4,4,0]}}]
+      });
+    },
+    async loadCatStats(){
+      if(!this.isLogCategoryPage())return;
+      const item=this.logCategoryPage();
+      this.catStatsBusy=true;
+      try{
+        const q=new URLSearchParams({platform:item.platform,limit:'10'});
+        this.catStats=await this.api(`/api/v1/logs/categories/${item.key}/event-stats?`+q.toString());
+        this.afterPaint(()=>this.drawCatCharts());
+      }catch(e){this.catStats=null;this.warn('分类统计加载失败',e)}
+      finally{this.catStatsBusy=false}
+    },
+    refreshCatPage(){this.loadLogCategory();this.loadCatStats()}
   }
 }

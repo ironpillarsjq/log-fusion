@@ -75,7 +75,7 @@ def test_documented_routes_match_application():
 
 def test_documented_route_count():
     """docs/API.md §2 的接口总表当前有 29 条；新增/删除接口时同步更新此断言。"""
-    assert len(_documented_routes()) == 29
+    assert len(_documented_routes()) == 30
 
 
 # --- 心跳状态阈值与载荷 -------------------------------------------------------
@@ -334,6 +334,17 @@ def test_invalid_category_returns_400_before_db_access(client, url):
     response = client.get(url)
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid category"
+
+
+@pytest.mark.parametrize("url", [
+    "/api/v1/logs/categories/bad-name/event-stats",
+    "/api/v1/logs/categories/security/event-stats?limit=11",
+    "/api/v1/logs/categories/security/event-stats?limit=0",
+])
+def test_event_stats_rejects_invalid_params_before_db(client, url):
+    """事件维度统计：非法类别名 400、limit 越界 422，都在查库之前返回。"""
+    response = client.get(url)
+    assert response.status_code in (400, 422)
 
 
 @pytest.mark.parametrize("url", [
