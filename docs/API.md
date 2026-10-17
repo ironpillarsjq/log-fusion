@@ -645,7 +645,7 @@ Windows 旧字段兼容示例：
 ### 7.1 `GET /api/v1/evidence/summary`
 
 无参数。**逐条复算校验**：对每行按 `sha256(IFNULL(log_timestamp,'') + 0x1F + raw_log)`
-重新计算并与 `log_hash` 比较，一次全表扫描给出四类计数。
+重新计算并与 `log_hash` 比较，一次全表扫描给出三类计数。
 
 ```json
 {
@@ -654,6 +654,12 @@ Windows 旧字段兼容示例：
   "data": {
     "total": 128,
     "statuses": { "VALID": 125, "HASH_MISMATCH": 2, "RAW_MISSING": 1 },
+    "byPlatform": {
+      "linux": { "total": 116, "statuses": { "VALID": 113, "HASH_MISMATCH": 2, "RAW_MISSING": 1 },
+                 "firstAt": "2026-10-11T15:19:42", "lastAt": "2026-10-15T11:40:02" },
+      "windows": { "total": 12, "statuses": { "VALID": 12, "HASH_MISMATCH": 0, "RAW_MISSING": 0 },
+                   "firstAt": "2026-10-16T14:47:54", "lastAt": "2026-10-17T15:10:46" }
+    },
     "healthy": false,
     "source": { "host": "192.168.5.6", "database": "log_hash", "table": "log_hash" }
   }
@@ -661,6 +667,12 @@ Windows 旧字段兼容示例：
 ```
 
 - `total` 是存证表当前真实行数，等于三个状态之和。
+- `byPlatform`（2026-10-16 新增）：按 `platform` 拆分，键为小写平台名，每项给 `total`、
+  `statuses` 和该平台**首次/最近一次写入存证的时间**（`firstAt`/`lastAt`）。页面用它算
+  「覆盖率 = 存证数 ÷ 该平台日志总量」，并用 `firstAt` 标注「存证自何时启用」——
+  **早于 `firstAt` 的日志本来就没有存证，不能算成缺失**。
+- 覆盖率的分母是业务表行数，**含采集端重试造成的重复投递**；因此覆盖率用于看趋势，
+  不等于「丢了多少条」。
 - `statuses`：
   - `VALID` —— 复算结果与存证摘要一致；
   - `HASH_MISMATCH` —— **不一致，说明原文 / 时间戳 / 摘要被改动**；

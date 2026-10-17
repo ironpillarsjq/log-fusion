@@ -17,7 +17,7 @@ function dashboard() {
     trend:null,trendNote:'',history:null,historyNote:'',
     // 概览「哈希存证」面板：/api/v1/evidence/summary（30 秒一轮）。失败时接口返回 503，
     // 此时必须显示「不可用」而不是 0——把故障显示成「0 条存证」会让人以为存证被清了。
-    hashTotal:0,hashStatuses:null,hashMetrics:[],hashError:'',hashNote:'',hashCheckedAt:'',hashBusy:false,
+    hashTotal:0,hashStatuses:null,hashByPlatform:null,hashMetrics:[],hashError:'',hashNote:'',hashCheckedAt:'',hashBusy:false,
     // 存证页的筛选与校验展示：verify 传 HASH_MISMATCH / RAW_MISSING / VALID 可只看某一类。
     // evidenceSource 显示实际读取的库表，避免「看的不是同一个库」这类误判。
     // evidenceTab 是「存证中心」的功能分区：overview / ledger / archive / policy。
@@ -343,6 +343,7 @@ function dashboard() {
         const st=s.statuses||{};
         this.hashTotal=Number(s.total||0);
         this.hashStatuses=st;
+        this.hashByPlatform=s.byPlatform||null;
         this.hashError='';
         this.hashCheckedAt=new Date().toLocaleTimeString('zh-CN',{hour12:false});
         this.setMetrics('hashMetrics',[
@@ -351,8 +352,9 @@ function dashboard() {
           {label:'哈希异常',value:this.fmt(st.HASH_MISMATCH),num:Number(st.HASH_MISMATCH||0),tone:'bad'},
           {label:'原始缺失',value:this.fmt(st.RAW_MISSING),num:Number(st.RAW_MISSING||0),tone:'warn'}
         ]);
-        this.hashNote='更新于 '+this.hashCheckedAt+'；摘要按 sha256(时间+原文) 在入库前计算并写入。'
-          +'接口已逐条复算（原始缺失不计入异常，仅说明无从复算）。';
+        this.hashNote='更新于 '+this.hashCheckedAt+'；摘要按 sha256(时间+原文) 在入库前计算并写入，'
+          +'接口已逐条复算。覆盖率 = 存证数 ÷ 业务表行数，分母含采集端重试造成的重复投递；'
+          +'存证启用前的历史日志不计入存证，差额不是丢失。';
       }catch(e){
         this.hashTotal=0;this.hashStatuses=null;this.hashMetrics=[];this.hashCheckedAt='';
         this.hashError='存证库查询失败（'+(e&&e.message?e.message:e)+'）：这不代表没有存证，请检查 log_hash 库连接。';
@@ -361,6 +363,27 @@ function dashboard() {
     // 指标卡的数字滚动由 countStep 更新，这里只把当前显示值取出来给模板用（找不到就显示 —，不要显示 0）
     metricValue(key,label){const m=(this[key]||[]).find(x=>x.label===label);return m?m.value:'—'},
     hashTiles(){return (this.hashMetrics||[]).filter(m=>m.label!=='存证总数')},
+    // 按平台拆分：存证数 / 日志总量 / 覆盖率。分母是业务表行数（含重复投递），
+    // 所以覆盖率只用于看趋势；「存证启用时间」用来解释历史缺口。
+    hashPlatformRows(){
+      const logs=(this.summary&&this.summary.by_platform)||{};
+      const evidence=this.hashByPlatform||{};
+      return ['Linux','Windows'].map(platform=>{
+        const entry=evidence[platform.toLowerCase()]||{};
+        const totalLogs=Number(logs[platform]||0);
+        const stored=Number(entry.total||0);
+        return {
+          platform, logs:totalLogs, evidence:stored,
+          pct:totalLogs?Math.min(100,Math.round(stored/totalLogs*1000)/10):null,
+          since:entry.firstAt||''
+        };
+      });
+    },
+    hashSinceNote(){
+      const rows=this.hashPlatformRows().filter(r=>r.since);
+      if(!rows.length)return '';
+      return rows.map(r=>r.platform+' 自 '+String(this.fmtTime(r.since)).slice(0,10)+' 起').join('，')+' 生成存证';
+    },
     hashCount(name){return Number((this.hashStatuses||{})[name]||0)},
     hashValidPct(){return this.hashTotal?Math.round(this.hashCount('VALID')/this.hashTotal*1000)/10:0},
     hashBar(){
@@ -396,7 +419,7 @@ function dashboard() {
         const changed=sig!==this.summarySig;
         this.summary=s;this.summarySig=sig;
         this.setMetrics('overviewMetrics',[
-          {label:'日志总量',value:this.fmt(s.total),num:Number(s.total||0),hint:'实时刷新'},
+          {label:'日志总量',value:this.fmt(s.total),num:Number(s.total||0),hint:'含重复投递'},
           {label:'Linux 日志',value:this.fmt(s.by_platform.Linux),num:Number(s.by_platform.Linux||0),hint:'审计日志'},
           {label:'Windows 日志',value:this.fmt(s.by_platform.Windows),num:Number(s.by_platform.Windows||0),hint:'事件日志'},
           this.realtimeMetric()

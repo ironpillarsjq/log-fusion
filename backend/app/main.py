@@ -843,19 +843,47 @@ def evidence_summary():
     """
     table = _evidence_table()
     try:
-        counted = rows(
+        # 一次扫描同时得到「校验结果」和「平台」两个维度：多一次 GROUP BY 就让
+        # 全表 SHA-256 复算跑两遍，没必要。
+        grouped = rows(
             hash_engine,
-            f"SELECT {EVIDENCE_VERIFY_SQL} AS verify_status, COUNT(*) AS n FROM {table} GROUP BY verify_status",
+            f"SELECT platform, {EVIDENCE_VERIFY_SQL} AS verify_status, COUNT(*) AS n,"
+            f" MIN(created_at) AS first_at, MAX(created_at) AS last_at"
+            f" FROM {table} GROUP BY platform, verify_status",
         )
     except Exception as exc:
         logger.exception("存证摘要查询失败")
         raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
-    found = {item["verify_status"]: int(item["n"]) for item in counted}
-    statuses = {name: found.get(name, 0) for name in EVIDENCE_STATUSES}
+    statuses = {name: 0 for name in EVIDENCE_STATUSES}
+    by_platform: dict[str, dict] = {}
+    for item in grouped:
+        count = int(item.get("n") or 0)
+        status = item.get("verify_status")
+        if status in statuses:
+            statuses[status] += count
+        key = str(item.get("platform") or "unknown").lower()
+        entry = by_platform.setdefault(key, {
+            "total": 0,
+            "statuses": {name: 0 for name in EVIDENCE_STATUSES},
+            "firstAt": None,
+            "lastAt": None,
+        })
+        entry["total"] += count
+        if status in entry["statuses"]:
+            entry["statuses"][status] += count
+        first, last = item.get("first_at"), item.get("last_at")
+        if first is not None and (entry["firstAt"] is None or first < entry["firstAt"]):
+            entry["firstAt"] = first
+        if last is not None and (entry["lastAt"] is None or last > entry["lastAt"]):
+            entry["lastAt"] = last
     total = sum(statuses.values())
     return {"code": 0, "message": "ok", "data": {
         "total": total,
         "statuses": statuses,
+        # 按平台拆分：前端用它算「覆盖率 = 存证数 ÷ 该平台日志总量」。
+        # firstAt 是存证功能在该平台**实际开始写入**的时间——Windows 比 Linux 晚，
+        # 早于该时间的日志本来就没有存证，不能算成缺失。
+        "byPlatform": by_platform,
         "healthy": statuses["HASH_MISMATCH"] == 0 and statuses["RAW_MISSING"] == 0,
         "source": _evidence_source(),
     }}

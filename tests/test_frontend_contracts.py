@@ -293,6 +293,19 @@ def test_evidence_filters_can_be_reset(dashboard_html, app_js):
     assert "evidenceStart=''" in app_js and "evidenceEnd=''" in app_js
 
 
+def test_overview_evidence_panel_shows_coverage_and_enable_time(dashboard_html, app_js):
+    """存证面板必须按平台显示覆盖率并标注存证启用时间。
+
+    「日志总量 893,968 vs 存证 59,963」曾被当成数据丢失：其实差额是存证上线前的
+    历史数据 + 重复投递。页面上必须把这两点写出来，否则还会再被误读一次。
+    """
+    assert "hashPlatformRows()" in dashboard_html and "hashPlatformRows()" in app_js
+    assert "hashSinceNote()" in dashboard_html and "hashSinceNote()" in app_js
+    assert "含重复投递" in app_js, "日志总量必须标注含重复投递"
+    assert "历史日志不计入存证" in app_js, "面板必须说明历史数据不补"
+    assert "byPlatform" in app_js
+
+
 def test_chart_self_check_tools_are_documented():
     """两个不依赖浏览器的图表自检工具必须留在仓库里，并在文档里可被发现。"""
     for tool in ("chart-layout-check.cjs", "chart-render-check.cjs"):

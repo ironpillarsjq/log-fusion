@@ -37,7 +37,7 @@ flowchart LR
 
 | 组件 | 职责 | 状态边界 |
 |---|---|---|
-| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证列表/导出、归档接口、服务端更新触发接口、心跳 upsert、WebSocket、生命周期巡检与每日自动归档任务 | 应用主入口 |
+| `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证摘要（含按平台拆分与首次写入时间）/列表/导出、归档接口、服务端更新触发接口、心跳 upsert、WebSocket、生命周期巡检与每日自动归档任务 | 应用主入口 |
 | `backend/app/security_logs.py` | 绿盟日志归一化、MySQL 身份去重/冲突检测、持久化补录/增量队列、会话锁、游标查询 | 后台默认开启，仅实时；显式历史 CLI 可续跑；DDL 与字段字典在 security-log-client/sql |
 | `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置与归档策略（目录、保留月数、单批上限） | `get_settings()` 进程内缓存 |
 | `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |

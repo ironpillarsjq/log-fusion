@@ -658,6 +658,33 @@ def test_evidence_summary_reports_healthy_when_no_anomalies(client, monkeypatch)
     assert payload["healthy"] is True
 
 
+def test_evidence_summary_splits_by_platform_with_first_seen(client, monkeypatch):
+    """按平台拆分存证数并给出「该平台首次写入存证的时间」。
+
+    页面用这两个数算覆盖率，并标注「Windows 存证自 2026-10-16 起」——
+    否则「日志总量 vs 存证总数」的差会被误读成数据丢失。
+    """
+    from datetime import datetime
+
+    monkeypatch.setattr(main, "rows", lambda *a, **k: [
+        {"platform": "linux", "verify_status": "VALID", "n": 40,
+         "first_at": datetime(2026, 10, 11, 15, 19, 42), "last_at": datetime(2026, 10, 15, 11, 40, 2)},
+        {"platform": "linux", "verify_status": "HASH_MISMATCH", "n": 3,
+         "first_at": datetime(2026, 10, 11, 15, 19, 42), "last_at": datetime(2026, 10, 15, 11, 40, 2)},
+        {"platform": "windows", "verify_status": "VALID", "n": 12,
+         "first_at": datetime(2026, 10, 16, 14, 47, 54), "last_at": datetime(2026, 10, 17, 15, 10, 46)},
+    ])
+    payload = client.get("/api/v1/evidence/summary").json()["data"]
+
+    assert payload["total"] == 55
+    assert payload["statuses"] == {"VALID": 52, "HASH_MISMATCH": 3, "RAW_MISSING": 0}
+    assert payload["byPlatform"]["linux"]["total"] == 43
+    assert payload["byPlatform"]["linux"]["statuses"]["HASH_MISMATCH"] == 3
+    assert payload["byPlatform"]["linux"]["firstAt"].startswith("2026-10-11")
+    assert payload["byPlatform"]["windows"]["total"] == 12
+    assert payload["byPlatform"]["windows"]["firstAt"].startswith("2026-10-16")
+
+
 # --- 存证筛选：平台与入库时间范围（P0 页面改造新增）----------------------------
 
 def test_evidence_where_platform_filter():
