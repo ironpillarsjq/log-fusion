@@ -26,7 +26,7 @@ Log Fusion 是面向运维和审计场景的日志融合平台，接收 Linux �
   - 曲线**按原始采样值直接画折线**（`smooth:false`，不做 EWMA、不做滑动平均）：平滑会掩盖单点尖峰，而尖峰正是这张图要看的东西，2026-10-13 按需求取消平滑（改回之前的中间版本见 `CHANGELOG.md`）。
   - 唯一保留的「稳定观感」措施是**纵轴锚定**（`niceDelayMax()`，`DELAY_AXIS_FLOOR` 下限 5 秒）：自动缩放的纵轴会把 3~4 秒之间的小波动撑满整个高度，看起来像剧烈震荡。延迟逼近 10 秒（在线/延迟分界阈值）时，图上会出现一条 `延迟阈值 10s` 参考线。
   - 所有图表统一走 `app.js` 的 `paint()`：数据没变就不重画、只有数据变就合并更新、只有序列结构变才重建——这样 WebSocket 每 5 秒推送时不会把整张图重新播一遍动画（否则页面会一直闪），见 `ARCHITECTURE.md` §4.2。
-- 左侧导航是二级菜单（仅「融合日志管理」有子菜单），五个页面都有 URL hash 深链（`#/overview`、`#/heartbeat`、`#/logs`、`#/log-stats`、`#/evidence`），刷新后停在原页面。导航下方是「服务连接」状态卡：四个库各一行（状态点 + 中文名 + 真实库名 + 已连接/不可用，HTMX 每 30 秒刷新片段）+ 浏览器自己的 WebSocket 实时通道行。
+- 左侧导航中「融合日志管理」和「日志审计系统日志」都有二级菜单。后者包含入侵防护、恶意 IP 全局黑名单、WEB 安全三个独立分类页（`#/security-ips`、`#/security-blacklist`、`#/security-web`）；原 `#/security` 兼容跳转至入侵防护。所有功能页支持 URL hash 深链，刷新后停在原页面。导航下方是「服务连接」状态卡：四个库各一行（状态点 + 中文名 + 真实库名 + 已连接/不可用，HTMX 每 30 秒刷新片段）+ 浏览器自己的 WebSocket 实时通道行。
 - **运行概览**含「哈希存证」面板：存证总数、一致/哈希异常/原始缺失的占比条与计数（`/api/v1/evidence/summary`，30 秒一轮）。存证库查询失败时面板显示「存证库不可用」而不是 0——原先概览里那三行写死的「系统状态」徽标已移除，连接状态统一看侧栏卡片。
 - 查询 7 类 Linux 日志表和 5 类 Windows 日志表；融合日志列表按 **30 条/页**分页（可翻页，支持平台/类别/关键词筛选）。
 - 接收 Linux/Windows 日志：`parsers.py` 把原始记录解析成数据库行（含时间归一化与按表裁剪），再批量入库；响应用 `inserted`/`skipped`/`failed`/`hashed`/`errors[].stage` 区分“解析失败”“入库失败”和“存证跳过”。
@@ -275,6 +275,6 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
 
 ## 安全产品日志（2026-10-16）
 
-三类日志和断点表已实际建于 `log_fusion`。采集实现位于 `backend/app/security_logs.py`，独立 CLI 位于 `security-log-client/import_history.py`，命令与完整配置见 [同步说明](../security-log-client/docs/SYNC.md)。按用户最新要求，默认 `SECURITY_SYNC_ENABLED=true`，本机也已开启。启动仅采集近期数据，不创建或恢复三个月历史任务；未完成历史保留为 stopped。首次回看 120 秒、每 30 秒巡检、默认延后最新 30 秒，中断期间超过 600 秒的旧数据不追补。前端新增 `#/security`，每 10 秒读取已入库数据，即使采集关闭仍可查历史。Linux/Windows 原有统计与存证口径保留。
+三类日志和断点表已实际建于 `log_fusion`。采集实现位于 `backend/app/security_logs.py`，独立 CLI 位于 `security-log-client/import_history.py`，命令与完整配置见 [同步说明](../security-log-client/docs/SYNC.md)。按用户最新要求，默认 `SECURITY_SYNC_ENABLED=true`，本机也已开启。启动仅采集近期数据，不创建或恢复三个月历史任务；未完成历史保留为 stopped。首次回看 120 秒、每 30 秒巡检、默认延后最新 30 秒，中断期间超过 600 秒的旧数据不追补。前端「日志审计系统日志」下分为三个分类子页，每 10 秒读取当前分类已入库数据，即使采集关闭仍可查历史。列表展示事件、设备、协议、严重度原值、动作原值、次数等关键字段；黑名单额外展示域名/IP/引擎，WEB 额外展示请求 URL。每个分类页都有事件信息统计环形图和规则 / 威胁类型统计条形图，统计当前页最多 30 条记录（每条记 1 次，不累加上游 count），跟随分类、分页和 10 秒刷新，不代表分类全量；分别按 event 名称、ruleid 与 threat_type 组合分组，缺失值计入「未提供」，长尾合并为其他，悬停查看完整名称。点击「原始详情」打开完整 JSON 弹窗，支持 Esc、遮罩及关闭按钮关闭。Linux/Windows 原有统计与存证口径保留。
 
 安全日志配置：`SECURITY_OVERLAP_SECONDS=120`（首次及每轮重叠秒数）、`SECURITY_LIVE_WINDOW_SECONDS=600`（中断后最多回看秒数，必须不小于 overlap）、`SECURITY_POLL_SECONDS=30`、`SECURITY_LAG_SECONDS=30`。重启会重置本次实时起点，不沿用旧 live 队列。设置 `SECURITY_SYNC_ENABLED=false` 并重启可关闭；只保留单 worker。

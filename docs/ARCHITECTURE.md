@@ -287,6 +287,10 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 
 默认启用 `SECURITY_SYNC_ENABLED` 后 lifespan 创建 `_security_sync_loop`，用 `asyncio.to_thread` 执行有界同步请求，避免阻塞事件循环。新表由显式迁移 CLI 创建，不加入现有 `Base.metadata.create_all()`。后台启动先 initialize_live，仅三类实时轮转，不调用历史 initialize；旧历史窗口保留但未完成状态改为 stopped；每个时间窗口先查计数，必要时二分，再取第一页完整数据。数据库会话锁覆盖 HTTP 和写入，同一事务提交窗口数据及 JSON 断点。退出时等待当前请求/事务收尾。凭据沿用独立项目配置，Token 401 时刷新一次，错误消息不包含凭据或 SQL 参数。
 
-`#/security` 经三个只读接口查看摘要、游标列表和原始详情，每 10 秒刷新；已有 WebSocket 新增 `{type:"security_logs",logType,mode?,rows?,status}` 通知。客户端忽略未知 type，避免把安全日志通知当成心跳快照清空客户端列表。CLI 不发 WS，REST 刷新仍正常。保持单 worker，不引入 SSE。采集开关关闭不影响这些只读 API。
+「日志审计系统日志」的三个二级菜单对应 `#/security-ips`、`#/security-blacklist`、`#/security-web`，共用展示组件，但标题、摘要与列表按当前分类查询，切换分类重置游标。旧 `#/security` 兼容跳转至入侵防护。经三个只读接口查看摘要、游标列表和原始详情，每 10 秒刷新；已有 WebSocket 新增 `{type:"security_logs",logType,mode?,rows?,status}` 通知。客户端忽略未知 type，避免把安全日志通知当成心跳快照清空客户端列表。CLI 不发 WS，REST 刷新仍正常。保持单 worker，不引入 SSE。采集开关关闭不影响这些只读 API。
 
 2026-10-16 后续策略变更：backend 的 Worker 固定 live_only=True，第一次初始化实时状态后不再每轮初始化历史。首次范围从 now-lag-overlap 起，旧 live 待处理窗口丢弃；同一进程长时间失败后的窗口裁剪至 now-lag-live_window，旧历史队列始终不参与选取。CLI `run` 默认也仅实时，只有显式 `--history-only` 才调用历史初始化。现有数据不删，历史未完成不伪装成 complete。
+
+列表直接选择已建表中的常用列，按类型追加黑名单 domain/ip/engine 或 WEB url，不在列表加载 raw_record/rawinfo。原始详情使用原生 `<dialog>` 模态弹窗（焦点约束、Esc/遮罩关闭、加载与重试、关闭后恢复焦点），通过请求序号忽略关闭后或切换记录后的旧响应；内容仅用 `x-text` 渲染。
+
+分类页各展示事件信息环形图与规则 / 威胁类型条形图（共用两个容器，跟随当前分类与游标页）。图表从当前列表最多 30 条记录分别按 event 与 [ruleid, threat_type] 组合分组，每条记录计 1，不累加上游 count，也不新增全表聚合请求；空值以「未提供」参与分组，规则 0 有效；组合键使用 JSON 数组以保留字段边界。长名称截断显示、tooltip 保留全文。图旁明确本页口径及加载/故障状态。绘制与 resize 都沿用 paint()，相同数据不重画；窄容器图例换行，长尾合并，验证纳入 chart-render-check.cjs。

@@ -1,8 +1,9 @@
 function dashboard() {
   return {
     /* ===== 页面与数据状态 ================================================== */
-    page:'overview',navLogsOpen:false,clock:'',
+    page:'overview',navLogsOpen:false,navSecurityOpen:false,clock:'',
     securitySummary:null,securityRows:[],securityType:'ipslog',securityBefore:null,securityNext:null,securityBack:[],securityDetail:'',securityError:'',securityBusy:false,securityTimer:null,securityUpdated:'',
+    securityDetailOpen:false,securityDetailBusy:false,securityDetailError:'',securityDetailId:null,securityDetailRequest:0,
     summary:{total:0,by_platform:{Linux:0,Windows:0},categories:[]},categories:[],clients:[],logs:[],evidence:[],logKeys:[],logPlatform:'Linux',logCategory:'authentication_session',keyword:'',heartbeatMetrics:[],evidenceMetrics:[],overviewMetrics:[],
     // 心跳计数：WebSocket 快照与 REST 降级共用同一份（图表与指标都从这里取数）
     hbCounts:{total:0,online:0,delayed:0,offline:0},
@@ -80,14 +81,35 @@ function dashboard() {
     },
 
     /* ===== 导航（二级菜单 + hash 深链）==================================== */
+    securityPages(){return [
+      {page:'security-ips',type:'ipslog',label:'入侵防护日志',hint:'查看入侵防护事件与原始记录'},
+      {page:'security-blacklist',type:'ipblacklistlog',label:'恶意 IP 全局黑名单日志',hint:'查看恶意 IP 命中记录与原始记录'},
+      {page:'security-web',type:'ips_web_secure_event_log',label:'WEB 安全日志',hint:'查看 WEB 安全事件与原始记录'}
+    ]},
+    isSecurityPage(){return this.securityPages().some(p=>p.page===this.page)},
+    securityPage(){return this.securityPages().find(p=>p.page===this.page)||this.securityPages()[0]},
+    securityCurrentTypes(){return (this.securitySummary?.types||[]).filter(t=>t.type===this.securityType)},
+    securityValue(value){return value===null||value===undefined||value===''?'—':String(value)},
     pageFromHash(){
       const raw=String(location.hash||'').replace(/^#\/?/,'');
-      return ['overview','heartbeat','logs','log-stats','evidence','maintenance','security'].includes(raw)?raw:'';
+      if(raw==='security')return 'security-ips'; // 保留旧链接入口
+      return ['overview','heartbeat','logs','log-stats','evidence','maintenance',...this.securityPages().map(p=>p.page)].includes(raw)?raw:'';
     },
     go(p,silent){
-      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance','security'].includes(p))return;
+      if(p==='security')p='security-ips';
+      const security=this.securityPages().find(item=>item.page===p);
+      if(!['overview','heartbeat','logs','log-stats','evidence','maintenance'].includes(p)&&!security)return;
+      if(this.page!==p)this.closeSecurityDetail();
       this.page=p;
       if(p==='logs'||p==='log-stats')this.navLogsOpen=true;
+      if(security){
+        this.navSecurityOpen=true;
+        if(this.securityType!==security.type){
+          this.securityType=security.type;
+          this.securityBefore=null;this.securityNext=null;this.securityBack=[];
+          this.securityRows=[];this.securityError='';this.securityUpdated='';
+        }
+      }
       try{history.replaceState(null,'','#/'+p)}catch(e){location.hash='#/'+p}
       if(!silent)this.onPageEnter();
     },
@@ -99,7 +121,7 @@ function dashboard() {
       else if(p==='logs'){this.loadLogs()}
       else if(p==='log-stats'){this.loadLogStats()}
       else if(p==='evidence'){this.loadEvidence()}
-      else if(p==='security'){this.loadSecurity()}
+      else if(this.isSecurityPage()){this.loadSecurity()}
       this.afterPaint(()=>this.redrawVisible());
     },
     // Alpine 的 x-show 是异步生效的，必须等它把 display 改回来再画
@@ -108,6 +130,7 @@ function dashboard() {
       if(this.page==='overview'){this.drawChart();this.drawOverviewTrend();this.drawPlatformGauge()}
       else if(this.page==='heartbeat')this.drawHeartbeatCharts();
       else if(this.page==='log-stats')this.drawStatsAll();
+      else if(this.isSecurityPage())this.drawSecurityCharts();
     },
 
     /* ===== 图表基础设施 ===================================================
@@ -240,7 +263,7 @@ function dashboard() {
       // 图表只按容器初始尺寸绘制，窗口变化后必须重画，否则图形与图例错位
       window.addEventListener('resize',()=>this.resizeAll());
       const fromHash=this.pageFromHash();
-      if(fromHash)this.page=fromHash;
+      if(fromHash)this.go(fromHash,true);
       if(this.page==='logs'||this.page==='log-stats')this.navLogsOpen=true;
       window.addEventListener('hashchange',()=>{const p=this.pageFromHash();if(p&&p!==this.page)this.go(p)});
       this.tick();setInterval(()=>this.tick(),1000);
@@ -260,7 +283,7 @@ function dashboard() {
       this.historyTimer=setInterval(()=>{if(this.page==='heartbeat'&&!this.historyBusy)this.loadHistory()},10000);
       this.pageTimer=setInterval(()=>{if(this.page==='logs')this.loadLogs();else if(this.page==='evidence')this.loadEvidence()},15000);
       this.statsTimer=setInterval(()=>{if(this.page==='log-stats'&&!this.statsBusy)this.loadLogStats()},30000);
-      this.securityTimer=setInterval(()=>{if(this.page==='security')this.loadSecurity()},10000);
+      this.securityTimer=setInterval(()=>{if(this.isSecurityPage())this.loadSecurity()},10000);
     },
     tick(){this.clock=new Date().toLocaleString('zh-CN',{hour12:false})},
 
@@ -890,7 +913,7 @@ function dashboard() {
     // WebSocket 快照与 REST 降级都走这里：图表（在线率/分布/排行）因此自动继续更新，无额外代码路径
     applySnapshot(snap){
       if(snap.type&&snap.type!=='snapshot'){
-        if(snap.type==='security_logs'&&this.page==='security')this.loadSecurity();
+        if(snap.type==='security_logs'&&this.isSecurityPage())this.loadSecurity();
         return;
       }
       const clients=(snap.clients||[]).map(c=>({clientId:c.client_id,serverName:c.hostname,ipAddress:c.ip,os_type:c.system,lastHeartbeatAt:c.last_heartbeat,heartbeatDelaySec:c.heartbeatDelaySec,heartbeatStatus:c.status}));
@@ -899,6 +922,64 @@ function dashboard() {
     },
     securityStatus(value){if(value==='stopped')return '已停止';if(value==='disabled')return '未安排';if(this.securitySummary?.enabled===false&&!this.securitySummary?.collectorActive&&value&&value!=='complete')return '断点已保存，等待续跑';return ({pending:'待开始',running:'处理中',complete:'已完成',watching:'持续采集中',retrying:'失败，等待重试'})[value]||'未初始化'},
     securityEpoch(value){return value?this.fmtTime(new Date(value*1000).toISOString()):'—'},
+    securityChartNote(){
+      const scope='仅统计当前页 '+this.securityRows.length+' 条记录（每页最多 30 条），每条记录计 1 次；不代表分类全量。';
+      if(this.securityError)return this.securityRows.length?'读取失败，保留上次成功结果。'+scope:'日志读取失败，暂无可用统计。';
+      if(this.securityBusy)return this.securityRows.length?'正在更新，暂显示上次成功结果。'+scope:'正在加载当前分类日志…';
+      return scope;
+    },
+    securityDistribution(fields){
+      const keys=Array.isArray(fields)?fields:[fields];
+      const counts=new Map();
+      this.securityRows.forEach(row=>{
+        const values=keys.map(field=>{
+          const value=row[field];
+          return value===null||value===undefined||String(value).trim()===''?'未提供':String(value).trim();
+        });
+        // 组合键保留字段边界，规则或威胁文本含分隔符时也不会误合并。
+        const key=JSON.stringify(values);
+        if(!counts.has(key))counts.set(key,{name:values.join(' / '),value:0});
+        counts.get(key).value++;
+      });
+      return [...counts.values()].sort((a,b)=>b.value-a.value||a.name.localeCompare(b.name));
+    },
+    drawSecurityCharts(){if(this.isSecurityPage()){this.drawSecurityEvents();this.drawSecurityRules()}},
+    drawSecurityEvents(){
+      const groups=this.securityDistribution('event');
+      // 当前页最多 30 条，合并长尾以免图例挤出画布；完整事件名称保留在 tooltip。
+      const data=groups.length>6?[...groups.slice(0,5),{name:'其他事件（合计）',value:groups.slice(5).reduce((sum,r)=>sum+r.value,0)}]:groups;
+      const narrow=this.chartWidth('security-event-chart')<440;
+      const center=narrow?['50%','38%']:['30%','50%'];
+      const option={
+        animationDuration:400,animationDurationUpdate:280,
+        color:['#2f6bff','#4cc3b2','#8a79e9','#e9b45a','#7ba8de','#b7c5da'],
+        tooltip:{trigger:'item',renderMode:'richText',confine:true,formatter:p=>p.name+'\n'+p.value+' 条（'+p.percent+'%）'},
+        title:!data.length?this.emptyTitle(this.securityError?'日志读取失败':this.securityBusy?'正在加载日志…':'暂无日志数据'):{show:false},
+        legend:{type:'plain',orient:narrow?'horizontal':'vertical',left:narrow?'center':'58%',top:narrow?undefined:'middle',bottom:narrow?6:undefined,
+          width:narrow?'92%':'40%',data:data.map(r=>r.name),icon:'circle',itemWidth:9,itemHeight:9,itemGap:12,
+          textStyle:{fontSize:11,color:'#5f6e85',width:narrow?70:Math.max(110,Math.floor(this.chartWidth('security-event-chart')*.4)-30),overflow:'truncate'}},
+        series:[{name:'事件信息',type:'pie',radius:narrow?['32%','52%']:['44%','64%'],center,
+          itemStyle:{borderColor:'#fff',borderWidth:3,borderRadius:5},label:{show:false},labelLine:{show:false},data},
+          this.centerPie(this.fmt(this.securityRows.length),'本页日志',center,24,data.length>0)]
+      };
+      this.paint('security-event-chart',option);
+    },
+    drawSecurityRules(){
+      const groups=this.securityDistribution(['ruleid','threat_type']);
+      const data=groups.length>7?[...groups.slice(0,6),{name:'其他规则 / 威胁类型（合计）',value:groups.slice(6).reduce((sum,r)=>sum+r.value,0)}]:groups;
+      const option={
+        animationDuration:400,animationDurationUpdate:280,
+        tooltip:{trigger:'axis',renderMode:'richText',confine:true,axisPointer:{type:'shadow'},valueFormatter:v=>v+' 条'},
+        title:!data.length?this.emptyTitle(this.securityError?'日志读取失败':this.securityBusy?'正在加载日志…':'暂无日志数据'):{show:false},
+        grid:{left:16,right:36,top:12,bottom:8,containLabel:true},
+        xAxis:{type:'value',min:0,minInterval:1,splitLine:this.splitLine(),axisLabel:{fontSize:11,color:'#728197'},axisLine:{show:false}},
+        yAxis:{type:'category',inverse:true,data:data.map(r=>r.name),axisLine:{show:false},axisTick:{show:false},
+          axisLabel:{fontSize:11,color:'#5f6e85',width:this.chartWidth('security-rule-chart')<440?94:180,overflow:'truncate'}},
+        series:[{name:'规则 / 威胁类型',type:'bar',barMaxWidth:24,showBackground:true,backgroundStyle:{color:'#f4f7fc',borderRadius:5},
+          itemStyle:{color:'#6886e8',borderRadius:[0,5,5,0]},label:{show:true,position:'right',color:'#5f6e85',fontSize:11},data:data.map(r=>r.value)}]
+      };
+      this.paint('security-rule-chart',option);
+    },
     async loadSecurity(){
       if(this.securityBusy)return;
       this.securityBusy=true;
@@ -909,21 +990,37 @@ function dashboard() {
           this.api('/api/v1/security/logs/'+encodeURIComponent(kind)+(before?'?before='+before:''))
         ]);
         this.securitySummary=summary;
-        if(this.securityType===kind&&this.securityBefore===before){this.securityRows=list.items||[];this.securityNext=list.nextBefore}
-        this.securityError='';this.securityUpdated=new Date().toLocaleTimeString('zh-CN',{hour12:false});
-      }catch(e){this.securityError='安全日志读取失败：'+e.message}
+        if(this.securityType===kind&&this.securityBefore===before){
+          this.securityRows=list.items||[];this.securityNext=list.nextBefore;
+          this.securityError='';this.securityUpdated=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+        }
+      }catch(e){if(this.securityType===kind&&this.securityBefore===before)this.securityError='安全日志读取失败：'+e.message}
       finally{
         this.securityBusy=false;
-        if(this.securityType!==kind||this.securityBefore!==before)this.loadSecurity();
+        if(this.isSecurityPage()&&(this.securityType!==kind||this.securityBefore!==before))this.loadSecurity();
+        else this.afterPaint(()=>this.drawSecurityCharts());
       }
     },
-    securityReset(){this.securityBefore=null;this.securityNext=null;this.securityBack=[];this.securityDetail='';this.securityRows=[];this.loadSecurity()},
-    securityForward(){if(!this.securityNext||this.securityBusy)return;this.securityBack.push(this.securityBefore);this.securityBefore=this.securityNext;this.securityDetail='';this.loadSecurity()},
-    securityPrevious(){if(!this.securityBack.length||this.securityBusy)return;this.securityBefore=this.securityBack.pop();this.securityDetail='';this.loadSecurity()},
+    securityReset(){this.securityBefore=null;this.securityNext=null;this.securityBack=[];this.closeSecurityDetail();this.securityRows=[];this.securityUpdated='';this.securityError='';this.loadSecurity();this.afterPaint(()=>this.drawSecurityCharts())},
+    securityForward(){if(!this.securityNext||this.securityBusy)return;this.securityBack.push(this.securityBefore);this.securityBefore=this.securityNext;this.closeSecurityDetail();this.loadSecurity()},
+    securityPrevious(){if(!this.securityBack.length||this.securityBusy)return;this.securityBefore=this.securityBack.pop();this.closeSecurityDetail();this.loadSecurity()},
+    closeSecurityDetail(){
+      this.securityDetailRequest++;
+      this.securityDetailOpen=false;this.securityDetailBusy=false;this.securityDetail='';this.securityDetailError='';
+      const dialog=this.$refs?.securityDetailDialog;
+      if(dialog?.open)dialog.close();
+    },
     async showSecurityDetail(id){
-      const kind=this.securityType;
-      try{const record=await this.api('/api/v1/security/logs/'+encodeURIComponent(kind)+'/'+id);if(kind===this.securityType)this.securityDetail=JSON.stringify(record,null,2)}
-      catch(e){this.securityError='日志详情读取失败：'+e.message}
+      const kind=this.securityType,request=++this.securityDetailRequest;
+      this.securityDetailId=id;this.securityDetail='';this.securityDetailError='';
+      this.securityDetailOpen=true;this.securityDetailBusy=true;
+      const dialog=this.$refs?.securityDetailDialog;
+      if(dialog&&!dialog.open)dialog.showModal();
+      try{
+        const record=await this.api('/api/v1/security/logs/'+encodeURIComponent(kind)+'/'+id);
+        if(request===this.securityDetailRequest&&this.securityDetailOpen&&kind===this.securityType)this.securityDetail=JSON.stringify(record,null,2);
+      }catch(e){if(request===this.securityDetailRequest&&this.securityDetailOpen)this.securityDetailError='日志详情读取失败：'+e.message}
+      finally{if(request===this.securityDetailRequest)this.securityDetailBusy=false}
     }
   }
 }

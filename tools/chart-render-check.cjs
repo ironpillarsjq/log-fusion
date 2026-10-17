@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* 前端渲染自检（不依赖浏览器）。
  *
- * 背景：运行概览/心跳监控/日志统计页共 9 张 ECharts 图（趋势面积图、半环仪表、
+ * 背景：运行概览/心跳监控/日志统计/日志审计分类页共 11 张 ECharts 图（趋势面积图、半环仪表、
  * 状态甜甜圈、7×24 热力图等）。本机沙箱里无法运行无头浏览器，
  * 所以这里用「真实 app.js 的绘制函数 + 真实 frontend/vendor 的 ECharts 服务端渲染（SVG）」
  * 把每张图真正画一遍，断言：
@@ -141,9 +141,40 @@ const STATS = {
   ]
 };
 
+const SECURITY_ROWS = [
+  { event: 'SQL 注入', ruleid: 0, threat_type: 'Web 攻击', count: 100 },
+  { event: 'SQL 注入', ruleid: 1001, threat_type: 'Web 攻击', count: 1 },
+  { event: '异常访问', ruleid: 1001, threat_type: 'Web 攻击', count: 5 },
+  { event: null, ruleid: null, threat_type: null, count: 0 }
+];
+
 /* --- 用例 -------------------------------------------------------------------- */
 
 const CASES = [
+  ...['security-ips', 'security-blacklist', 'security-web'].flatMap(page => [
+    {
+      name: `${page} · 事件信息统计`, id: 'security-event-chart', page, size: [620, 300],
+      setup: c => { c.securityRows = SECURITY_ROWS; }, draw: c => c.drawSecurityEvents(),
+      expectText: ['本页日志', 'SQL 注入', '异常访问', '未提供']
+    },
+    {
+      name: `${page} · 规则 / 威胁类型统计`, id: 'security-rule-chart', page, size: [620, 300],
+      setup: c => { c.securityRows = SECURITY_ROWS; }, draw: c => c.drawSecurityRules(),
+      expectText: ['0 / Web 攻击', '1001 / Web 攻击', '未提供 / 未提供']
+    }
+  ]),
+  ...['event', 'rule'].flatMap(kind => [
+    {
+      name: `日志审计 · ${kind} 分布（空态）`, id: `security-${kind}-chart`, size: [320, 300], empty: true,
+      setup: c => { c.securityRows = []; }, draw: c => kind === 'event' ? c.drawSecurityEvents() : c.drawSecurityRules()
+    },
+    ...[320, 620].map(width => ({
+      name: `日志审计 · ${kind} 分布（${width}px 长名称与长尾）`, id: `security-${kind}-chart`, size: [width, 300],
+      setup: c => { c.securityRows = Array.from({ length: 30 }, (_, i) => ({ event: '很长的安全日志事件名称-' + i, ruleid: i, threat_type: '很长的威胁类型描述-' + i })); },
+      draw: c => kind === 'event' ? c.drawSecurityEvents() : c.drawSecurityRules(),
+      expectText: [kind === 'event' ? '本页日志' : '其他规则']
+    }))
+  ]),
   {
     name: '概览 · 实时接入趋势', id: 'trend-chart', size: [820, 300],
     setup: c => { c.trend = trendPoints({ count: 60, stepMinutes: 1, bucket: 'minute' }); },
@@ -398,19 +429,26 @@ function runCase(item) {
 
 async function liveCases(base) {
   const get = async (p) => {
-    const r = await fetch(base + p);
+    const r = await fetch(base + p, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) throw Error(`HTTP ${r.status} ${p}`);
     return (await r.json()).data;
   };
-  const [trend, heat, stats, history] = await Promise.all([
+  const kinds = ['ipslog', 'ipblacklistlog', 'ips_web_secure_event_log'];
+  const [trend, heat, stats, history, ...securityLists] = await Promise.all([
     get('/api/v1/logs/trend?range=1h&bucket=minute'),
     get('/api/v1/logs/trend?range=7d&bucket=hour'),
     get('/api/v1/logs/stats?range=7d&limit=10'),
-    get('/api/v1/monitor/history?minutes=15')
+    get('/api/v1/monitor/history?minutes=15'),
+    ...kinds.map(kind => get('/api/v1/security/logs/' + kind + '?limit=30'))
   ]);
+  if (securityLists.some(list => !Array.isArray(list.items))) throw Error('安全日志列表缺少 items 数组');
   const live = (name, id, size, setup, draw, extra) =>
     Object.assign({ name: `[真实数据] ${name}`, id, size, setup, draw }, extra || {});
   return [
+    ...kinds.flatMap((kind, i) => [
+      live(`${kind} · 事件信息统计`, 'security-event-chart', [620, 300], c => { c.securityRows = securityLists[i].items; }, c => c.drawSecurityEvents()),
+      live(`${kind} · 规则 / 威胁类型统计`, 'security-rule-chart', [620, 300], c => { c.securityRows = securityLists[i].items; }, c => c.drawSecurityRules())
+    ]),
     live('概览 · 实时接入趋势', 'trend-chart', [820, 300], c => { c.trend = trend; }, c => c.drawOverviewTrend()),
     live('统计 · 接入趋势', 'stats-trend-chart', [820, 300], c => { c.statsPlatform = ''; c.statsTrend = heat; }, c => c.drawStatsTrend()),
     live('统计 · 平台占比甜甜圈', 'stats-platform-chart', [380, 300], c => { c.statsPlatform = ''; c.statsTrend = heat; }, c => c.drawStatsPlatform()),
@@ -576,6 +614,37 @@ console.log(`\n=== 心跳延迟趋势的视觉与纵轴锚定 ===`);
   check((((raisedAvg.markLine || {}).data) || []).length === 1, '延迟超过阈值时画出 10 秒参考线（对应心跳状态阈值）');
 }
 
+console.log(`\n=== 日志审计分类图：真实记录口径、原值与重复刷新 ===`);
+{
+  const { comp, calls, captured } = makeHarness();
+  comp.page = 'security-ips';
+  comp.__el('security-event-chart', 620, 300);
+  comp.__el('security-rule-chart', 620, 300);
+  comp.securityRows = SECURITY_ROWS;
+  comp.drawSecurityCharts();
+  const events = captured['security-event-chart'].series[0].data;
+  check(events.reduce((sum, row) => sum + row.value, 0) === 4 && events.find(r => r.name === 'SQL 注入').value === 2, '按事件名称归组，每条记录计 1 次，不累加 count');
+  const rules = captured['security-rule-chart'];
+  check(rules.yAxis.data.includes('0 / Web 攻击'), '规则 0 保留为有效值');
+  check(rules.yAxis.data.includes('未提供 / 未提供'), '缺失规则和威胁类型仍计入统计');
+  check(rules.series[0].data[rules.yAxis.data.indexOf('1001 / Web 攻击')] === 2, '相同规则与威胁类型组合合并计数');
+  const originalRows = comp.securityRows;
+  comp.securityRows = [{ ruleid: 1001, threat_type: 'A' }, { ruleid: 1001, threat_type: 'B' }, { ruleid: 1002, threat_type: 'A' }];
+  check(comp.securityDistribution(['ruleid', 'threat_type']).length === 3, '规则或威胁类型不同的记录分别统计');
+  comp.securityRows = originalRows;
+  check(comp.securityChartNote().includes('当前页 4 条') && comp.securityChartNote().includes('不代表分类全量'), '图旁说明当前页统计范围');
+  comp.drawSecurityCharts();
+  check(calls['security-event-chart'] === 1 && calls['security-rule-chart'] === 1, '相同数据刷新不会重画两张分类图');
+  comp.securityRows = [{ event: '恶意域名访问', ruleid: 5001, threat_type: 'DNS 黑名单' }];
+  comp.page = 'security-blacklist';
+  comp.drawSecurityCharts();
+  check(captured['security-event-chart'].series[0].data[0].name === '恶意域名访问', '切换分类后只展示新分类数据');
+  comp.securityRows = [];
+  comp.securityError = 'HTTP 503';
+  comp.drawSecurityCharts();
+  check(captured['security-event-chart'].title.text === '日志读取失败' && captured['security-rule-chart'].title.text === '日志读取失败', '读取失败展示故障态，不伪装成零日志');
+}
+
 console.log(`\n=== 实例被重建后必须重新绘制 ===`);
 {
   // 回归：getChart 重建实例时要一起清掉绘制指纹，否则新实例会被「数据没变」判为无需绘制 → 空白图
@@ -632,10 +701,12 @@ console.log(`\n=== 容器被 x-show 隐藏（宽高为 0）===`);
   comp.__el('trend-chart', 0, 300);
   comp.__el('platform-gauge', 0, 300);
   comp.__el('stats-heatmap', 0, 300);
+  comp.__el('security-event-chart', 0, 300);
+  comp.__el('security-rule-chart', 0, 300);
   comp.trend = trendPoints({ count: 5, stepMinutes: 1, bucket: 'minute' });
   comp.summary = SUMMARY;
   comp.statsHeat = trendPoints({ count: 5, stepMinutes: 60, bucket: 'hour' });
-  comp.drawOverviewTrend(); comp.drawPlatformGauge(); comp.drawStatsHeatmap();
+  comp.drawOverviewTrend(); comp.drawPlatformGauge(); comp.drawStatsHeatmap(); comp.drawSecurityEvents(); comp.drawSecurityRules();
   check(Object.keys(captured).length === 0, '隐藏容器跳过绘制（不画 0×0）', `已画：${Object.keys(captured).join(',') || '无'}`);
 }
 

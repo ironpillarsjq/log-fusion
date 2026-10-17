@@ -309,7 +309,13 @@ class SecurityStore:
 
     def logs(self, kind, before=None, limit=30):
         table = CATALOG[kind]["table"]
-        query = f"SELECT id,event_time,sip,dip,sport,dport,ruleid,threat_type,log_id FROM `{table}` WHERE source_instance=:instance"
+        columns = ["id", "event_time", "sip", "dip", "sport", "dport", "ruleid", "threat_type", "log_id",
+                   "event", "protocol", "severity", "action", "acted", "count", "dev_ip"]
+        # 仅查询各类已存在的列；列表不加载可能很大的 raw_record/rawinfo。
+        columns += {"ipslog": [], "ipblacklistlog": ["domain", "ip", "engine"],
+                    "ips_web_secure_event_log": ["url"]}[kind]
+        projection = ",".join(f"`{column}`" for column in columns)
+        query = f"SELECT {projection} FROM `{table}` WHERE source_instance=:instance"
         params = {"instance": self.instance, "limit": limit + 1}
         if before is not None:
             query += " AND id<:before"

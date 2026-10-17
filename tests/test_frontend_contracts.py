@@ -229,7 +229,7 @@ def test_frontend_handles_utc_buckets_with_local_time(app_js):
 
 
 def test_secondary_navigation_and_deep_links(dashboard_html, app_js):
-    """融合日志管理是唯一的二级菜单，且五个页面都要能从 URL 深链直达。"""
+    """融合日志与日志审计系统日志使用二级菜单，支持 URL 深链。"""
     assert "navLogsOpen" in dashboard_html and "navLogsOpen" in app_js
     assert 'class="nav-sub"' in dashboard_html
     for page in ("overview", "heartbeat", "logs", "log-stats", "evidence"):

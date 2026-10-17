@@ -306,3 +306,41 @@ def test_security_api_cursor_and_raw_detail(monkeypatch):
     assert seen == [("ipslog", 9, 2)]
     monkeypatch.setattr(main.security_store, "detail", lambda *args: record())
     assert client.get("/api/v1/security/logs/ipslog/1").json()["data"] == record()
+
+
+@pytest.mark.parametrize("kind", security.ORDER)
+def test_security_list_projection_uses_existing_columns_and_keeps_cursor(kind):
+    """扩展列表不能查其他分类独有的列，也不能加载完整原文；分页仍按入库 ID。"""
+    from types import SimpleNamespace
+
+    seen = []
+    rows = [{"id": i, "event_time": datetime(2026, 10, 17), "severity": 0, "count": 0}
+            for i in (9, 8, 7)]
+
+    class Connection:
+        def execute(self, sql, params):
+            seen.append((str(sql), params))
+            return SimpleNamespace(mappings=lambda: rows)
+
+    @contextmanager
+    def connect():
+        yield Connection()
+
+    store = security.SecurityStore(SimpleNamespace(connect=connect), "test-site")
+    result = store.logs(kind, before=10, limit=2)
+    sql, params = seen[0]
+    selected = sql.split("SELECT ", 1)[1].split(" FROM ", 1)[0].replace("`", "").split(",")
+    available = {field["field"] for field in security.CATALOG[kind]["fields"]} | {"id", "event_time"}
+    assert set(selected) <= available
+    assert {"event", "protocol", "severity", "action", "acted", "count", "dev_ip"} <= set(selected)
+    if kind == "ipblacklistlog":
+        assert {"domain", "ip", "engine"} <= set(selected)
+    if kind == "ips_web_secure_event_log":
+        assert "url" in selected
+    assert "raw_record" not in selected and "rawinfo" not in selected
+    assert "id<:before" in sql and "ORDER BY id DESC LIMIT :limit" in sql
+    assert params == {"instance": "test-site", "before": 10, "limit": 3}
+    assert [row["id"] for row in result["items"]] == [9, 8]
+    assert result["nextBefore"] == 8
+    assert result["items"][0]["event_time"] == "2026-10-17T00:00:00.000Z"
+    assert result["items"][0]["severity"] == 0
