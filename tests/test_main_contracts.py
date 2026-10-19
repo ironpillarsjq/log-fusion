@@ -296,6 +296,38 @@ def test_heartbeat_success_returns_pong_and_broadcasts(client, monkeypatch):
     assert broadcasted == [snapshot]
 
 
+def test_heartbeat_fills_missing_ip_from_http_client(client, monkeypatch):
+    captured = []
+    snapshot = {"total_clients": 1, "online_clients": 1, "delayed_clients": 0,
+                "offline_clients": 0, "clients": []}
+
+    def fake_persist(payload):
+        captured.extend(payload)
+        return snapshot
+
+    async def fake_broadcast(message):
+        return None
+
+    monkeypatch.setattr(main, "persist_heartbeats", fake_persist)
+    monkeypatch.setattr(main.ws_manager, "broadcast", fake_broadcast)
+    response = client.post("/api/v1/heartbeat", json=[{"client_id": "win-1", "system": "Windows"}])
+    assert response.status_code == 200
+    assert captured[0]["ip"] == "testclient"
+
+
+def test_heartbeat_preserves_explicit_ip(client, monkeypatch):
+    captured = []
+    snapshot = {"total_clients": 1, "online_clients": 1, "delayed_clients": 0,
+                "offline_clients": 0, "clients": []}
+    monkeypatch.setattr(main, "persist_heartbeats", lambda payload: (captured.extend(payload) or snapshot))
+    async def fake_broadcast(message):
+        return None
+    monkeypatch.setattr(main.ws_manager, "broadcast", fake_broadcast)
+    response = client.post("/api/v1/heartbeat", json=[{"client_id": "win-1", "ip": "10.0.0.8"}])
+    assert response.status_code == 200
+    assert captured[0]["ip"] == "10.0.0.8"
+
+
 def test_heartbeat_persist_failure_returns_503(client, monkeypatch):
     def boom(payload):
         raise RuntimeError("mysql down")

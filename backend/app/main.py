@@ -510,7 +510,15 @@ def persist_heartbeats(payload: list[dict[str, Any]]) -> dict:
 
 
 @app.post("/api/v1/heartbeat")
-async def heartbeat(payload: list[dict[str, Any]]):
+async def heartbeat(request: Request, payload: list[dict[str, Any]]):
+    # Windows Fluent Bit 1.8 cannot reliably expose a local IP environment
+    # variable. Fill it from the direct HTTP peer unless the client sent one.
+    source_ip = request.client.host if request.client else ""
+    if source_ip:
+        payload = [
+            dict(item, ip=item.get("ip") or item.get("ip_address") or source_ip)
+            for item in payload
+        ]
     try:
         snapshot = await asyncio.to_thread(persist_heartbeats, payload)
     except Exception as exc:

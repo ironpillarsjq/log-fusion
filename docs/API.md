@@ -458,8 +458,8 @@ Windows 旧字段兼容示例：
 |---|---|---|
 | `client_id` | 无 | `UNKNOWN_HOST` |
 | `hostname` | `server_name` | client_id |
-| `ip` | `ip_address` | 空字符串 |
-| `system` | `os_type` | `Unknown` |
+| `ip` | `ip_address` | HTTP 请求来源地址（采集端未提供时） |
+| `system` | `os_type` | `Unknown`（采集端应明确上报 `Linux`/`Windows`） |
 | `latency` | 无 | `0` |
 
 示例：
@@ -486,6 +486,8 @@ Windows 旧字段兼容示例：
 
 - 请求体不是数组或不符合 `list[dict]`：通常 422。
 - 数据库写入/类型转换失败：HTTP 503，`{"detail":"heartbeat persist failed"}`。
+
+采集端未提供 `ip`/`ip_address` 时，服务端使用本次 HTTP 请求的对端地址补齐；明确上报的 IP 优先保留。当前部署不信任 `X-Forwarded-For`。
 
 `heartbeat_interval_sec` 等额外字段会被忽略。
 
