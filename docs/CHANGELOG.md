@@ -4,6 +4,21 @@
 
 ## Unreleased
 
+### Changed — 2026-10-28（Syslog 随主服务启动）
+
+- 按用户要求将 WAF/DAS 接收挂到 FastAPI lifespan，执行 run.py/原启动脚本会默认一起监听 5514/5515 TCP/UDP，不再要求独立进程。
+- 新增 SYSLOG_ENABLED 和 WAF_SYSLOG_*/DAS_SYSLOG_* 等环境配置，支持端口、来源过滤、时区、分帧、开关与资源上限。应用就绪前完成绑定；端口冲突导致启动失败并清理已启动监听，正常退出/重载会释放端口并保留待写队列。
+- 新增 6 项测试覆盖主应用启停真实收包、同端口重载重用、全局/单产品关闭、绑定失败回滚、环境配置校验及退出仅收尾当前写入；全量 369 passed（1 条既有弃用警告）。无实际数据库结构变化，无实际 HTTP/WebSocket 接口行为变化。六表仍须显式执行 SQL；不连接真实设备或 MySQL。
+
+
+### Added — 2026-10-28（WAF/DAS Syslog 接收与解析）
+
+- 新增独立 TCP/UDP 接收器、RFC3164/RFC5424 头解析、TCP 字节长度/LF/CRLF 分帧、可配置设备时区与来源过滤；不自动挂载到现有 FastAPI 生命周期。
+- WAF 15 个 tag 按审计与运行/安全与访问/流量统计分三表，DAS audit/session/warn 分三表，兼容旧 DAS 中文告警。沿用产品原生业务字段，每表保存 raw_log、raw_bytes、payload 与处理元数据。
+- 完整报文先写 SQLite WAL/FULL 缓冲，再写 MySQL；写库失败保留 pending，解析失败隔离，稳定 ingest_id 支持提交后重放。摘要不作为事件唯一键。
+- 新增可审查 `docs/sql/device_syslog.sql` 与 `docs/SYSLOG.md`；MySQL DDL 未执行，无实际数据库结构变化。新增 Syslog 协议入口须显式启动；无实际 HTTP/WebSocket 接口行为变化，前端和现有存证算法未改变。
+- 新增 54 项 Syslog 测试，覆盖原文、类型/时区、真实 loopback TCP/UDP、缓冲重启恢复、失败重试和 SQL 一致性；全量 363 passed（1 条既有 Starlette/httpx 弃用警告）。尚未连接真实设备或 MySQL 联调。
+
 ### Fixed — 2026-10-19（Windows 心跳客户端列表补齐系统与 IP）
 
 - Windows Fluent Bit 心跳配置补充 `system=Windows` 与 `hostname=${HOSTNAME}`，不再因缺少字段显示 `Unknown` 或主机名回退。

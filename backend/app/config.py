@@ -1,4 +1,6 @@
 from functools import lru_cache
+from typing import Literal
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +35,30 @@ class Settings(BaseSettings):
     security_live_window_seconds: int = 600
     security_lag_seconds: int = 30
     security_timeout_seconds: int = 90
+    # Started by the ASGI worker lifespan, including run.py/reload; no sockets at import time.
+    syslog_enabled: bool = True
+    syslog_host: str = "0.0.0.0"
+    syslog_spool_dir: str = "data/syslog"
+    syslog_max_bytes: int = Field(1048576, ge=1)
+    syslog_max_spool_bytes: int = Field(1073741824, ge=1)
+    syslog_idle_timeout: float = Field(60, gt=0)
+    syslog_max_connections: int = Field(64, ge=1)
+    waf_syslog_enabled: bool = True
+    waf_syslog_port: int = Field(5514, ge=1, le=65535)
+    waf_syslog_source_instance: str = Field("waf-site-a", pattern=r"^[A-Za-z0-9_.:-]{1,64}$")
+    waf_syslog_protocols: Literal["udp", "tcp", "both"] = "both"
+    waf_syslog_timezone: str = "+08:00"
+    waf_syslog_framing: Literal["auto", "line", "octet"] = "auto"
+    waf_syslog_body_base64: bool = False
+    waf_syslog_allow_sources: list[str] = Field(default_factory=list)
+    das_syslog_enabled: bool = True
+    das_syslog_port: int = Field(5515, ge=1, le=65535)
+    das_syslog_source_instance: str = Field("das-site-a", pattern=r"^[A-Za-z0-9_.:-]{1,64}$")
+    das_syslog_protocols: Literal["udp", "tcp", "both"] = "both"
+    das_syslog_timezone: str = "+08:00"
+    das_syslog_framing: Literal["auto", "line", "octet"] = "auto"
+    das_syslog_body_base64: bool = False
+    das_syslog_allow_sources: list[str] = Field(default_factory=list)
 
     @property
     def mysql_base(self) -> str:

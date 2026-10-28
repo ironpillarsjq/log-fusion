@@ -884,3 +884,10 @@ Windows 旧字段兼容示例：
 WebSocket 仍为 `/ws/client-monitor`，新增通知 `{type:"security_logs",logType:"ipslog",mode:"history",rows:123,status:"running"}`（错误通知可只含 logType/status）。它是刷新提示，不包含逐条日志。旧快照无 type 或 type=snapshot 时继续更新心跳；未知类型忽略。CLI 导入不广播，页面 10 秒轮询会显示变化。
 
 安全摘要状态补充（仅实时策略）：后台不再继续历史任务，旧未完成 history.status 为 stopped（保留 pending 供显式手动使用，不表示仍会执行），新实例不建历史任务、状态为 disabled；已完成历史仍为 complete。每次启动重设 live.since 和 checked_until 到近期起点，清空旧 live.pending；collection_mode=live_only。接口路径和既有字段保留，只增加 collectionMode/liveWindowSeconds 及上述状态含义，无新增路由。
+
+
+## Syslog 设备接收入口（2026-10-28）
+
+当前 TCP/UDP 接收器默认由 FastAPI lifespan 随 run.py 一起启动，端口为 WAF 5514、DAS 5515（均可配置）；可选独立 CLI 为 `python -m app.syslog_server`；这不是 `/api/v1/logs/waf` 或 `/api/v1/logs/das` HTTP 路由。已有 `/api/v1/logs/{platform}` 仍只接受 Linux/Windows。Syslog 不返回 HTTP 状态码或业务 JSON 确认，TCP 连接成功不等于业务入库成功。产品字段、消息分帧、原文边界、限额和本地状态 CLI 见 [SYSLOG.md](SYSLOG.md)。
+
+本次无实际 HTTP/WebSocket 接口行为变化，未新增 `/api/v1/device-logs*` 或 `/api/v1/syslog/status`；这些查询/状态能力以及前端展示待后续实现。接收器已注册到 FastAPI lifespan，默认随主服务启停；不经 SSE 或 WebSocket 广播。HTTP/WebSocket 路由与响应结构未变。接收状态通过进程日志和 `--status` 查看，后者只读本地队列状态（SQLite 初始化可能创建文件），不连接 MySQL。

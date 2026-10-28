@@ -30,6 +30,7 @@ from .hashing import build_evidence_row
 from .archive import archive_evidence, archive_root, months_ago
 from .ws import ws_manager
 from .security_logs import CATALOG as SECURITY_CATALOG, ROOT as SECURITY_ROOT, SecurityStore, SecurityWorker
+from .syslog_server import application_receivers
 
 logger = logging.getLogger("log_fusion")
 
@@ -189,18 +190,20 @@ async def _security_sync_loop():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _ensure_tables()
-    watchdog = asyncio.create_task(_status_watchdog())
-    archiver = asyncio.create_task(_auto_archive_loop())
-    tasks = [watchdog, archiver]
-    if settings.security_sync_enabled:
-        tasks.append(asyncio.create_task(_security_sync_loop()))
-    try:
-        yield
-    finally:
-        for task in tasks:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+    async with application_receivers(settings) as receivers:
+        app.state.syslog_receivers = receivers
+        watchdog = asyncio.create_task(_status_watchdog())
+        archiver = asyncio.create_task(_auto_archive_loop())
+        tasks = [watchdog, archiver]
+        if settings.security_sync_enabled:
+            tasks.append(asyncio.create_task(_security_sync_loop()))
+        try:
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            app.state.syslog_receivers = ()
 
 
 app.router.lifespan_context = lifespan

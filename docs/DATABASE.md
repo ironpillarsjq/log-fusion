@@ -350,3 +350,12 @@ SELECT * FROM audit_log_evidence ORDER BY received_at DESC LIMIT 1000
 每条保存全部来源列、完整原始 JSON、UTC 时间和规范化 JSON SHA-256。唯一键 `(source_instance,upstream_index,log_id)`；相同内容跳过，内容冲突失败并保留原条。普通索引覆盖实例+时间/源 IP/目的 IP/规则，黑名单补充域名前缀索引。同步 JSON 队列与对应窗口数据同事务写入；只有提交后前移边界，连接失败不跳过窗口。后台及 CLI 用同一会话锁串行处理。新表独立迁移，不注册进现有 ORM create_all，也不产生现有 log_hash 存证。
 
 迁移顺序：审阅 DDL → CLI migrate 创建缺失表并验证列名/类型/NULL/身份索引 → 手动 run 历史补录 → 由用户选择开启后台。兼容性：不修改原表/采集端协议。回滚：先关闭 SECURITY_SYNC_ENABLED 并重启，回退应用代码，保留新表和断点；不自动删数据。DDL 隐式提交，中断后重跑验证现有表。用户已确认现有导入量足够：停止剩余历史，启动仅采集最新数据。保留已有日志和历史窗口，未完成历史状态改为 stopped，实时状态在每次启动重置为近期起点。无新增 DDL、无数据删除。
+
+
+## WAF/DAS Syslog 六表（2026-10-28，DDL 已入仓库，真实库未执行）
+
+新增设计与写入代码面向 LOG_FUSION_DB（默认 log_fusion），六表为 waf_audit_log、waf_security_log、waf_traffic_log、das_statement_log、das_session_log、das_sensitive_log。可复现 DDL 是 [sql/device_syslog.sql](sql/device_syslog.sql)，列事实源是 backend/app/device_log_catalog.py 的 COMMON/BUSINESS/TABLES；这与既有 Linux/Windows 的 catalog.LINUX_TABLE_FIELDS / WINDOWS_TABLE_FIELDS 是分别维护的协议边界，不复用旧平台裁剪规则。
+
+每表均有 raw_log LONGTEXT NOT NULL、raw_bytes LONGBLOB NOT NULL、raw_sha256 BINARY(32)、payload JSON；另有 source_instance、设备与 peer 地址、transport、log_type、UTC event_time/received_at/ingested_at、原始时间和解析状态。保留产品原生业务字段，六表完整字段和迁移/回滚顺序见 [SYSLOG.md](SYSLOG.md)。自动建表 Base 未引入这些表。脚本只新增六表，不创建库，不升级已有同名表；手工执行前需核对数据库名与现有结构。
+
+只有 ingest_id（首次本地接收 UUID）唯一；raw_sha256、ssid、correlation_id、data_id 等不被臆设为唯一事件键。接收器默认随主服务启停；接收缓冲 SQLite inbox 位于仓库根 data/syslog/，未知报文留 quarantine，写 MySQL 失败保留 pending。SQLite 队列不是第七张 MySQL 业务表。接收器不写 log_hash 存证库，不改变已有哈希算法和存证归档。无实际数据库结构变化；本次开发未执行 DDL/DML。后续部署须显式执行 SQL，回滚保留六表及缓冲，不自动删表/清数据。

@@ -39,7 +39,12 @@ flowchart LR
 |---|---|---|
 | `backend/app/main.py` | FastAPI 应用、路由、静态资源禁缓存中间件、日志写入、原始日志存证写入、存证摘要（含按平台拆分与首次写入时间）/列表/导出、归档接口、服务端更新触发接口、心跳 upsert、WebSocket、生命周期巡检与每日自动归档任务 | 应用主入口 |
 | `backend/app/security_logs.py` | 绿盟日志归一化、MySQL 身份去重/冲突检测、持久化补录/增量队列、会话锁、游标查询 | 后台默认开启，仅实时；显式历史 CLI 可续跑；DDL 与字段字典在 security-log-client/sql |
-| `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置与归档策略（目录、保留月数、单批上限） | `get_settings()` 进程内缓存 |
+| `backend/app/device_log_catalog.py` | WAF/DAS 六表原生字段、类型、tag 路由与可审查 DDL | 不注册到 Base、不自动建表 |
+| `backend/app/syslog_protocol.py` | RFC3164/RFC5424 消息头、RFC6587 TCP 分帧、设备时区 | 字节长度上限；不把 EOF 残帧当日志 |
+| `backend/app/syslog_parsers.py` | WAF 15 类与 DAS 新旧格式解析，原文/原字节保留、类型校验 | 纯函数；未知类型隔离，不套前端截图字段 |
+| `backend/app/syslog_store.py` | SQLite FULL 同步缓冲、隔离/检查点与六表参数化写入 | 原始报文先落盘；稳定 ingest_id 重放 |
+| `backend/app/syslog_server.py` | TCP/UDP 监听、来源过滤、接收限额、重试、status/replay CLI | 默认随 FastAPI lifespan 启停；导入不监听，详见 SYSLOG.md |
+| `backend/app/config.py` | 从环境和 `.env` 加载应用/数据库配置、归档策略与 WAF/DAS Syslog 端口/来源等配置 | `get_settings()` 进程内缓存 |
 | `backend/app/db.py` | 创建四个同步 SQLAlchemy Engine、监控库 Session、健康检查 | 每进程各自连接池 |
 | `backend/app/models.py` | 声明 `ClientStatus`、`LogHash`、`ArchiveLog` ORM 模型 | 覆盖平台心跳表、存证表与归档台账 |
 | `backend/app/catalog.py` | Linux/Windows 类别、Linux 查询列与真实列、Windows 分类视图展示列 | 代码内静态元数据 |
@@ -294,3 +299,8 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 列表直接选择已建表中的常用列，按类型追加黑名单 domain/ip/engine 或 WEB url，不在列表加载 raw_record/rawinfo。原始详情使用原生 `<dialog>` 模态弹窗（焦点约束、Esc/遮罩关闭、加载与重试、关闭后恢复焦点），通过请求序号忽略关闭后或切换记录后的旧响应；内容仅用 `x-text` 渲染。
 
 分类页各展示事件信息环形图与规则 / 威胁类型条形图（共用两个容器，跟随当前分类与游标页）。图表从当前列表最多 30 条记录分别按 event 与 [ruleid, threat_type] 组合分组，每条记录计 1，不累加上游 count，也不新增全表聚合请求；空值以「未提供」参与分组，规则 0 有效；组合键使用 JSON 数组以保留字段边界。长名称截断显示、tooltip 保留全文。图旁明确本页口径及加载/故障状态。绘制与 resize 都沿用 paint()，相同数据不重画；窄容器图例换行，长尾合并，验证纳入 chart-render-check.cjs。
+
+
+## WAF/DAS 接收链路（2026-10-28）
+
+`设备 TCP/UDP → syslog_server → syslog_store.Inbox（SQLite WAL/FULL）→ syslog_protocol / syslog_parsers → MySQLDeviceStore → log_fusion 六表`。字段事实源是 device_log_catalog，DDL 在 docs/sql/device_syslog.sql。完整消息的 raw_log、raw_bytes 和 payload 随记录保存；不可分类/解码报文停留本地隔离区。远端提交之后再确认本地队列，靠稳定 ingest_id 幂等重放，不按原文摘要去重。单条事务写入，后续吞吐优化需实测。接收生命周期由 app.main.lifespan 管理，运行 run.py 默认启用两个接收器，绑定成功才就绪，退出先关闭监听并收尾；端口冲突时回滚全部已启动资源。仍须单 worker，不在导入或 reload 父进程绑定端口。没有新增 Syslog WebSocket 广播。没有新增前端页面、HTTP 查询、消息代理、跨进程广播或存证联动，详细边界与部署步骤见 [SYSLOG.md](SYSLOG.md)。

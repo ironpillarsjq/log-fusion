@@ -139,3 +139,10 @@ sudo install -m 0755 /opt/log-fusion/deploy/update-log-fusion.sh /usr/local/bin/
 `POST /api/v1/admin/update` **没有任何鉴权**（与项目其它接口一致）。任何能访问本服务的人都能触发一次
 停服 + 覆盖代码 + 重启。**只应部署在受控内网/测试环境**。若要暴露到不可信网络，必须先加鉴权
 （共享令牌或来源 IP 白名单），并考虑给该接口单独限流。
+
+
+## WAF/DAS Syslog 随主服务运行（2026-10-28）
+
+现有 log-fusion.service 执行 run.py 时，FastAPI lifespan 默认一起启动 WAF 5514 和 DAS 5515 TCP/UDP，无需额外注册 Syslog 服务。端口、来源和开关放 backend/.env，见 [SYSLOG.md](SYSLOG.md)。仍须单 worker；若以前手动运行过独立接收 CLI，先停止，避免启动端口冲突。需要另外开放相应 TCP/UDP 防火墙入站，原服务启动脚本对 HTTP 8080 的规则不能代替 Syslog 规则。六张业务表的 SQL 仍须显式部署，未建表时先落本地缓冲。
+
+网页更新/重载/重启会同时短暂停止 Syslog 监听，已提交缓冲保留并在启动后续写，未收到的 UDP 无法补救。若启用的端口不可绑定，整个应用启动失败并记录对应产品和端口；先修改配置或解决占用，再重启。设置 SYSLOG_ENABLED=false 可明确关闭接收，仅启动原 Web 服务。
