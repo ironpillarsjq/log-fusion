@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from .catalog import (
     LINUX_CATEGORIES, WINDOWS_CATEGORIES, LINUX_TABLE_COLUMNS, LINUX_TABLE_FIELDS,
@@ -76,7 +78,27 @@ def query_category(
     }
 
 
+# 汇总缓存：12 张表各一次 COUNT(*)，表到几十万行后单次约 2.4 秒（实测 559k 行）。
+# InnoDB 的 COUNT(*) 走全索引扫描，加索引也救不了，只能缓存。30 秒 TTL 对
+# 「日志总量」这种慢变量足够；与 metrics.py 的做法一致（进程内缓存 + 单 worker）。
+SUMMARY_CACHE_TTL_SECONDS = 30
+
+_summary_lock = threading.Lock()
+_summary_cache: tuple[float, dict] | None = None
+
+
+def clear_summary_cache() -> None:
+    """清空汇总缓存（测试用；数据大改后也可主动调用）。"""
+    global _summary_cache
+    with _summary_lock:
+        _summary_cache = None
+
+
 def summary() -> dict:
+    global _summary_cache
+    cached = _summary_cache
+    if cached is not None and time.monotonic() - cached[0] < SUMMARY_CACHE_TTL_SECONDS:
+        return cached[1]
     result = {"total": 0, "by_platform": {"Linux": 0, "Windows": 0}, "categories": []}
     for platform, mapping in (("Linux", LINUX_CATEGORIES), ("Windows", WINDOWS_CATEGORIES)):
         engine = linux_engine if platform == "Linux" else windows_engine
@@ -86,6 +108,8 @@ def summary() -> dict:
             result["total"] += count
             result["by_platform"][platform] += count
             result["categories"].append({"key": key, "label": label, "platform": platform, "count": count})
+    with _summary_lock:
+        _summary_cache = (time.monotonic(), result)
     return result
 
 

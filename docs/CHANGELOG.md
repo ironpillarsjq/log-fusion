@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### Fixed — 2026-10-28（存证摘要超时：整表 SHA-256 移入后台）
+
+- `/api/v1/evidence/summary` 此前每次请求都对整表复算 SHA-256。实测 55.9 万行 / 429 MB 需 9~16 秒（MySQL 直查 16.1 秒），超过前端 8 秒硬超时，页面报「存证数据加载失败：请求超时（8s）」——把「慢」误读成「坏」。
+- 改为两层：**统计**按平台实时 `COUNT(*)` + `MIN/MAX(created_at)`，只读 `platform`/`created_at`，不读 `raw_log`；**校验**放后台线程，默认 10 分钟一次，结果写进程内缓存，请求只读缓存不等待。
+- 响应新增 `verifyReady` / `verifying` / `verifiedAt` / `verifyAgeSec` / `verifyDurationSec` / `verifyError`。**校验未就绪或超过 1 小时未刷新时 `healthy` 返回 `null`**，页面显示「校验中 / 待完成」而不是把 0 条异常当成「全部一致」。
+- `services.summary()`（12 张表 `COUNT(*)`，表到 55 万行后实测 2.4 秒）增加 30 秒 TTL 缓存，概览首屏不再等待。
+- 前端：概览「哈希存证」与存证页的三项分类计数在未就绪时显示 `—`，`hashPillText()`/`hashTone()` 返回中性态，存证页不再显示「当前全部存证摘要复算一致」。
+- 新增 4 项测试：未就绪时 `healthy=null`、结果陈旧时 `healthy=null`、查询失败仍返回 503、后台线程不重复启动；`conftest` 增加进程级缓存清理夹具，避免跨用例串数据。全量 **373 passed**。
+- 建议在目标库执行 `ALTER TABLE log_hash.log_hash ADD INDEX idx_platform_created (platform, created_at);`，使统计部分成为索引覆盖扫描（毫秒级）。
+- 无接口路径变化，`byPlatform` 结构不变；`healthy` 由「bool」放宽为「bool | null」，前端已同步处理。
+
 ### Changed — 2026-10-28（Syslog 随主服务启动）
 
 - 按用户要求将 WAF/DAS 接收挂到 FastAPI lifespan，执行 run.py/原启动脚本会默认一起监听 5514/5515 TCP/UDP，不再要求独立进程。

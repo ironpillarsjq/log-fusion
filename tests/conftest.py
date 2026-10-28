@@ -53,3 +53,20 @@ def no_schema_ddl(monkeypatch):
 
     monkeypatch.setattr(main, "_ensure_tables", lambda: None)
     return None
+
+
+@pytest.fixture(autouse=True)
+def reset_process_caches():
+    """清空进程级缓存。
+
+    `services.summary()` 与 `main` 的存证校验结果都是进程内缓存；若不在用例之间
+    清空，前一个用例算出的结果会被后一个用例读到，表现为「明明 patch 了新数据，
+    断言却拿到旧值」。进程重启本来也会清空，所以这里不改变真实语义。
+    """
+    from app import main, services
+
+    services.clear_summary_cache()
+    main._reset_verify_cache()
+    yield
+    services.clear_summary_cache()
+    main._reset_verify_cache()

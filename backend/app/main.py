@@ -5,6 +5,8 @@ import json
 import logging
 import shutil
 import subprocess
+import threading
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -842,60 +844,182 @@ def _evidence_source() -> dict:
     return {"host": settings.db_host, "database": settings.log_hash_db, "table": settings.log_hash_table}
 
 
-@app.get("/api/v1/evidence/summary")
-def evidence_summary():
-    """存证摘要：一次扫描同时给出总数与四类校验结果。
+# ── 存证校验缓存 ─────────────────────────────────────────────────────────────
+# 整表复算 SHA-256 的成本是 O(行数 × 原文长度)：实测 55.9 万行 / 429 MB 需要
+# 9~16 秒，远超前端 8 秒超时，页面会报「请求超时」——而数据其实是好的。
+#
+# 因此把摘要拆成两层：
+#   1) 快统计：只按 platform 做 COUNT(*) 与 MIN/MAX(created_at)，不读 raw_log；
+#      有 `(platform, created_at)` 索引时是索引覆盖扫描（毫秒级）。
+#   2) 慢校验：整表复算 SHA-256，放后台线程，结果缓存，请求只读缓存。
+#
+# 语义约束：校验还没算出来时**不得冒充「全部一致」**——`verifyReady=false`、
+# `healthy=null`，页面显示「校验中」。否则「还没算」会被读成「没有异常」，
+# 正是这个项目反复强调要避免的「故障被伪装成成功」。
+VERIFY_REFRESH_SECONDS = 600      # 缓存超过 10 分钟，请求会触发一次后台重算
+VERIFY_MAX_AGE_SECONDS = 3600     # 超过 1 小时没算成功，healthy 返回 null
 
-    查询失败时返回 **503** 而不是 0：把数据库故障降级成「0 条存证」会让
-    「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被清空了。
+_verify_guard = threading.Lock()
+_verify_state: dict[str, Any] = {
+    "statuses": {name: 0 for name in EVIDENCE_STATUSES},
+    "by_platform": {},
+    "finished_at": None,   # time.monotonic()，用于算新鲜度
+    "wall_time": None,     # 人类可读的完成时间，给页面显示
+    "duration": None,
+    "error": None,
+    "running": False,
+}
 
-    注意：本接口对整表复算 SHA-256（单次全表扫描）。当前万级规模在百毫秒内
-    完成；增长到百万级时应改为增量校验或异步任务（见 `docs/TODO.md`）。
-    """
+
+def _reset_verify_cache() -> None:
+    """清空校验缓存（测试用；进程重启时本来也是空的）。"""
+    with _verify_guard:
+        _verify_state.update({
+            "statuses": {name: 0 for name in EVIDENCE_STATUSES},
+            "by_platform": {},
+            "finished_at": None,
+            "wall_time": None,
+            "duration": None,
+            "error": None,
+            "running": False,
+        })
+
+
+def _compute_verify() -> dict[str, Any]:
+    """整表复算 SHA-256，返回 `{statuses, by_platform}`。耗时数秒到十几秒。"""
     table = _evidence_table()
-    try:
-        # 一次扫描同时得到「校验结果」和「平台」两个维度：多一次 GROUP BY 就让
-        # 全表 SHA-256 复算跑两遍，没必要。
-        grouped = rows(
-            hash_engine,
-            f"SELECT platform, {EVIDENCE_VERIFY_SQL} AS verify_status, COUNT(*) AS n,"
-            f" MIN(created_at) AS first_at, MAX(created_at) AS last_at"
-            f" FROM {table} GROUP BY platform, verify_status",
-        )
-    except Exception as exc:
-        logger.exception("存证摘要查询失败")
-        raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
+    grouped = rows(
+        hash_engine,
+        f"SELECT platform, {EVIDENCE_VERIFY_SQL} AS verify_status, COUNT(*) AS n"
+        f" FROM {table} GROUP BY platform, verify_status",
+    )
     statuses = {name: 0 for name in EVIDENCE_STATUSES}
-    by_platform: dict[str, dict] = {}
+    by_platform: dict[str, dict[str, int]] = {}
     for item in grouped:
         count = int(item.get("n") or 0)
         status = item.get("verify_status")
         if status in statuses:
             statuses[status] += count
         key = str(item.get("platform") or "unknown").lower()
-        entry = by_platform.setdefault(key, {
-            "total": 0,
-            "statuses": {name: 0 for name in EVIDENCE_STATUSES},
-            "firstAt": None,
-            "lastAt": None,
+        entry = by_platform.setdefault(key, {name: 0 for name in EVIDENCE_STATUSES})
+        if status in entry:
+            entry[status] += count
+    return {"statuses": statuses, "by_platform": by_platform}
+
+
+def _refresh_verify() -> None:
+    """后台线程执行一次完整校验并写回缓存；异常只记录，不向外抛。"""
+    started = time.monotonic()
+    try:
+        payload = _compute_verify()
+    except Exception as exc:
+        logger.exception("存证整表校验失败")
+        with _verify_guard:
+            _verify_state["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            _verify_state["running"] = False
+            _verify_state["duration"] = round(time.monotonic() - started, 1)
+        return
+    finished = time.monotonic()
+    with _verify_guard:
+        _verify_state.update({
+            "statuses": payload["statuses"],
+            "by_platform": payload["by_platform"],
+            "finished_at": finished,
+            "wall_time": datetime.now().isoformat(timespec="seconds"),
+            "duration": round(finished - started, 1),
+            "error": None,
+            "running": False,
         })
-        entry["total"] += count
-        if status in entry["statuses"]:
-            entry["statuses"][status] += count
-        first, last = item.get("first_at"), item.get("last_at")
-        if first is not None and (entry["firstAt"] is None or first < entry["firstAt"]):
-            entry["firstAt"] = first
-        if last is not None and (entry["lastAt"] is None or last > entry["lastAt"]):
-            entry["lastAt"] = last
-    total = sum(statuses.values())
+    logger.info("存证整表校验完成：%s（耗时 %.1fs）", payload["statuses"], finished - started)
+
+
+def _ensure_verify_fresh() -> None:
+    """缓存过期且没有在跑时起后台线程重算；**请求线程不等待它**。"""
+    with _verify_guard:
+        if _verify_state["running"]:
+            return
+        finished_at = _verify_state["finished_at"]
+        if finished_at is not None and time.monotonic() - finished_at < VERIFY_REFRESH_SECONDS:
+            return
+        _verify_state["running"] = True
+    threading.Thread(target=_refresh_verify, name="evidence-verify", daemon=True).start()
+
+
+@app.get("/api/v1/evidence/summary")
+def evidence_summary():
+    """存证摘要：计数实时统计，SHA-256 校验走缓存。
+
+    为什么要拆：整表复算 SHA-256 在 55 万行 / 429 MB 时实测 9~16 秒，超过前端
+    8 秒超时，页面直接报「请求超时」——「慢」被误读成「坏」。拆开后快统计毫秒级
+    返回，校验结果由后台线程定期刷新，用 `verifyReady` / `verifiedAt` /
+    `verifyAgeSec` 把「结果有多新」如实暴露给页面。
+
+    查询失败返回 **503** 而不是 0：把数据库故障降级成「0 条存证」会让
+    「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被清空了。
+    """
+    table = _evidence_table()
+    try:
+        # 快统计：只读 platform / created_at，不碰 raw_log（429 MB 主要在这里）
+        counted = rows(
+            hash_engine,
+            f"SELECT platform, COUNT(*) AS n, MIN(created_at) AS first_at, MAX(created_at) AS last_at"
+            f" FROM {table} GROUP BY platform",
+        )
+    except Exception as exc:
+        logger.exception("存证摘要查询失败")
+        raise HTTPException(503, f"存证库查询失败：{type(exc).__name__}: {str(exc)[:200]}")
+
+    by_platform: dict[str, dict] = {}
+    total = 0
+    for item in counted:
+        key = str(item.get("platform") or "unknown").lower()
+        count = int(item.get("n") or 0)
+        total += count
+        # firstAt 是存证在该平台**实际开始写入**的时间——Windows 比 Linux 晚，
+        # 早于该时间的日志本来就没有存证，不能算成缺失。
+        by_platform[key] = {
+            "total": count,
+            "statuses": {name: 0 for name in EVIDENCE_STATUSES},
+            "firstAt": item.get("first_at"),
+            "lastAt": item.get("last_at"),
+        }
+
+    _ensure_verify_fresh()
+
+    with _verify_guard:
+        statuses = dict(_verify_state["statuses"])
+        verified_platform = {k: dict(v) for k, v in _verify_state["by_platform"].items()}
+        finished_at = _verify_state["finished_at"]
+        running = _verify_state["running"]
+        error = _verify_state["error"]
+        wall_time = _verify_state["wall_time"]
+        duration = _verify_state["duration"]
+
+    # 校验结果回填到按平台的桶里；两次查询之间新增的平台先按 0 展示，等下一轮校验
+    for key, entry in by_platform.items():
+        if key in verified_platform:
+            entry["statuses"] = verified_platform[key]
+
+    verify_ready = finished_at is not None
+    age_seconds = int(time.monotonic() - finished_at) if verify_ready else None
+    # 未就绪或已过期时 healthy 必须是 null：校验还没算出来时「0 条异常」毫无意义，
+    # 返回 true 会让页面显示「全部正常」，属于把未知伪装成已知。
+    healthy: bool | None = None
+    if verify_ready and age_seconds is not None and age_seconds <= VERIFY_MAX_AGE_SECONDS:
+        healthy = statuses["HASH_MISMATCH"] == 0 and statuses["RAW_MISSING"] == 0
+
     return {"code": 0, "message": "ok", "data": {
         "total": total,
         "statuses": statuses,
-        # 按平台拆分：前端用它算「覆盖率 = 存证数 ÷ 该平台日志总量」。
-        # firstAt 是存证功能在该平台**实际开始写入**的时间——Windows 比 Linux 晚，
-        # 早于该时间的日志本来就没有存证，不能算成缺失。
         "byPlatform": by_platform,
-        "healthy": statuses["HASH_MISMATCH"] == 0 and statuses["RAW_MISSING"] == 0,
+        "healthy": healthy,
+        # 校验新鲜度：页面据此显示「校验于 x 分钟前」或「校验中」
+        "verifyReady": verify_ready,
+        "verifying": running,
+        "verifiedAt": wall_time,
+        "verifyAgeSec": age_seconds,
+        "verifyDurationSec": duration,
+        "verifyError": error,
         "source": _evidence_source(),
     }}
 

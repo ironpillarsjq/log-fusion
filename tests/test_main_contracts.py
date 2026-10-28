@@ -660,14 +660,47 @@ def test_invalid_verify_filter_returns_400(client):
     assert "verify" in response.json()["detail"]
 
 
-def test_evidence_summary_exposes_data_source(client, monkeypatch):
+def _seed_verify(statuses=None, by_platform=None, age_seconds=5):
+    """直接写入存证校验缓存，模拟「后台校验已经算完」。
+
+    真实实现里这份缓存由 `_refresh_verify` 线程写入；测试不能起线程（那会用被
+    patch 过的 `rows` 再算一遍并和断言竞争），所以直接构造缓存状态。
+    """
+    import time as _time
+
+    with main._verify_guard:
+        main._verify_state.update({
+            "statuses": statuses or {name: 0 for name in main.EVIDENCE_STATUSES},
+            "by_platform": by_platform or {},
+            "finished_at": _time.monotonic() - age_seconds,
+            "wall_time": "2026-10-28T15:00:00",
+            "duration": 12.3,
+            "error": None,
+            "running": False,
+        })
+
+
+@pytest.fixture
+def no_background_verify(monkeypatch):
+    """阻止请求触发后台校验线程，让用例只读缓存、结果确定。"""
+    monkeypatch.setattr(main, "_ensure_verify_fresh", lambda: None)
+
+
+def test_evidence_summary_exposes_data_source(client, monkeypatch, no_background_verify):
     """响应要带实际读取的库表，避免「页面看的不是同一个库」这类误判。"""
     from app import config
 
     monkeypatch.setattr(main, "rows", lambda *a, **k: [
-        {"verify_status": "VALID", "n": 7},
-        {"verify_status": "HASH_MISMATCH", "n": 2},
+        {"platform": "linux", "n": 7},
+        {"platform": "windows", "n": 2},
     ])
+    _seed_verify(
+        statuses={"VALID": 7, "HASH_MISMATCH": 2, "RAW_MISSING": 0},
+        by_platform={
+            "linux": {"VALID": 7, "HASH_MISMATCH": 0, "RAW_MISSING": 0},
+            "windows": {"VALID": 0, "HASH_MISMATCH": 2, "RAW_MISSING": 0},
+        },
+    )
     payload = client.get("/api/v1/evidence/summary").json()["data"]
 
     settings = config.get_settings()
@@ -679,10 +712,12 @@ def test_evidence_summary_exposes_data_source(client, monkeypatch):
     assert payload["total"] == 9
     assert payload["statuses"] == {"VALID": 7, "HASH_MISMATCH": 2, "RAW_MISSING": 0}
     assert payload["healthy"] is False
+    assert payload["verifyReady"] is True
 
 
-def test_evidence_summary_reports_healthy_when_no_anomalies(client, monkeypatch):
-    monkeypatch.setattr(main, "rows", lambda *a, **k: [{"verify_status": "VALID", "n": 5}])
+def test_evidence_summary_reports_healthy_when_no_anomalies(client, monkeypatch, no_background_verify):
+    monkeypatch.setattr(main, "rows", lambda *a, **k: [{"platform": "linux", "n": 5}])
+    _seed_verify(statuses={"VALID": 5, "HASH_MISMATCH": 0, "RAW_MISSING": 0})
     payload = client.get("/api/v1/evidence/summary").json()["data"]
 
     assert payload["total"] == 5
@@ -690,22 +725,25 @@ def test_evidence_summary_reports_healthy_when_no_anomalies(client, monkeypatch)
     assert payload["healthy"] is True
 
 
-def test_evidence_summary_splits_by_platform_with_first_seen(client, monkeypatch):
+def test_evidence_summary_splits_by_platform_with_first_seen(client, monkeypatch, no_background_verify):
     """按平台拆分存证数并给出「该平台首次写入存证的时间」。
 
     页面用这两个数算覆盖率，并标注「Windows 存证自 2026-10-16 起」——
     否则「日志总量 vs 存证总数」的差会被误读成数据丢失。
     """
-    from datetime import datetime
-
     monkeypatch.setattr(main, "rows", lambda *a, **k: [
-        {"platform": "linux", "verify_status": "VALID", "n": 40,
+        {"platform": "linux", "n": 43,
          "first_at": datetime(2026, 10, 11, 15, 19, 42), "last_at": datetime(2026, 10, 15, 11, 40, 2)},
-        {"platform": "linux", "verify_status": "HASH_MISMATCH", "n": 3,
-         "first_at": datetime(2026, 10, 11, 15, 19, 42), "last_at": datetime(2026, 10, 15, 11, 40, 2)},
-        {"platform": "windows", "verify_status": "VALID", "n": 12,
+        {"platform": "windows", "n": 12,
          "first_at": datetime(2026, 10, 16, 14, 47, 54), "last_at": datetime(2026, 10, 17, 15, 10, 46)},
     ])
+    _seed_verify(
+        statuses={"VALID": 52, "HASH_MISMATCH": 3, "RAW_MISSING": 0},
+        by_platform={
+            "linux": {"VALID": 40, "HASH_MISMATCH": 3, "RAW_MISSING": 0},
+            "windows": {"VALID": 12, "HASH_MISMATCH": 0, "RAW_MISSING": 0},
+        },
+    )
     payload = client.get("/api/v1/evidence/summary").json()["data"]
 
     assert payload["total"] == 55
@@ -715,6 +753,68 @@ def test_evidence_summary_splits_by_platform_with_first_seen(client, monkeypatch
     assert payload["byPlatform"]["linux"]["firstAt"].startswith("2026-10-11")
     assert payload["byPlatform"]["windows"]["total"] == 12
     assert payload["byPlatform"]["windows"]["firstAt"].startswith("2026-10-16")
+
+
+def test_evidence_summary_not_healthy_before_verification(client, monkeypatch, no_background_verify):
+    """校验尚未完成时 healthy 必须是 null。
+
+    全表 SHA-256 改到后台线程之后，「还没算」和「算了没有异常」是两种状态。
+    若此时返回 healthy=true，页面会把「未知」显示成「全部正常」——正是这个项目
+    一贯要求避免的「故障/未知被伪装成正常」。
+    """
+    monkeypatch.setattr(main, "rows", lambda *a, **k: [{"platform": "linux", "n": 9}])
+
+    payload = client.get("/api/v1/evidence/summary").json()["data"]
+
+    assert payload["total"] == 9
+    assert payload["verifyReady"] is False
+    assert payload["healthy"] is None
+    assert payload["verifiedAt"] is None
+
+
+def test_evidence_summary_reports_stale_verification(client, monkeypatch, no_background_verify):
+    """校验结果超过 1 小时未刷新时，healthy 也要回到 null，提示数据已陈旧。"""
+    monkeypatch.setattr(main, "rows", lambda *a, **k: [{"platform": "linux", "n": 3}])
+    _seed_verify(
+        statuses={"VALID": 3, "HASH_MISMATCH": 0, "RAW_MISSING": 0},
+        age_seconds=main.VERIFY_MAX_AGE_SECONDS + 60,
+    )
+
+    payload = client.get("/api/v1/evidence/summary").json()["data"]
+
+    assert payload["verifyReady"] is True
+    assert payload["healthy"] is None
+
+
+def test_evidence_summary_returns_503_when_query_fails(client, monkeypatch, no_background_verify):
+    """查不到库必须 503，不能降级成 total=0，否则会被读成「存证被清空」。"""
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(main, "rows", _boom)
+
+    response = client.get("/api/v1/evidence/summary")
+    assert response.status_code == 503
+
+
+def test_ensure_verify_fresh_spawns_at_most_one_thread(monkeypatch):
+    """已有一次在跑时不得重复起线程，避免并发重算把数据库打满。"""
+    spawned = []
+
+    class _FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            spawned.append(name)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(main.threading, "Thread", _FakeThread)
+    main._reset_verify_cache()
+
+    main._ensure_verify_fresh()
+    main._ensure_verify_fresh()
+
+    assert spawned == ["evidence-verify"]
 
 
 # --- 存证筛选：平台与入库时间范围（P0 页面改造新增）----------------------------

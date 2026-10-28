@@ -18,10 +18,15 @@ function dashboard() {
     // 概览「哈希存证」面板：/api/v1/evidence/summary（30 秒一轮）。失败时接口返回 503，
     // 此时必须显示「不可用」而不是 0——把故障显示成「0 条存证」会让人以为存证被清了。
     hashTotal:0,hashStatuses:null,hashByPlatform:null,hashMetrics:[],hashError:'',hashNote:'',hashCheckedAt:'',hashBusy:false,
+    // 整表 SHA-256 已挪到后台线程（55 万行要 9~16 秒），结果可能尚未就绪：
+    // verifyReady=false 时 statuses 全是 0，必须显示「校验中」而不是「0 条异常」。
+    hashVerifyReady:false,hashVerifying:false,hashVerifiedAt:'',hashVerifyAge:0,hashVerifyDuration:0,
     // 存证页的筛选与校验展示：verify 传 HASH_MISMATCH / RAW_MISSING / VALID 可只看某一类。
     // evidenceSource 显示实际读取的库表，避免「看的不是同一个库」这类误判。
     // evidenceTab 是「存证中心」的功能分区：overview / ledger / archive / policy。
     evidenceVerify:'',evidenceKeyword:'',evidenceSource:'',evidenceTampered:0,
+    // 存证页同样受「后台校验未就绪」影响：未就绪时不得显示「全部一致」
+    evidenceVerifyReady:false,
     evidencePlatform:'',evidenceStart:'',evidenceEnd:'',
     evidenceTab:'overview',
     /* 心跳延迟曲线的绘制参数
@@ -341,19 +346,31 @@ function dashboard() {
       try{
         const s=await this.api('/api/v1/evidence/summary');
         const st=s.statuses||{};
+        // verifyReady=false 表示后台校验还没算完：此时 statuses 全是 0。
+        // 把它显示成「没有异常」就是把未知伪装成正常，所以这几格显示「—」。
+        const ready=s.verifyReady===true;
         this.hashTotal=Number(s.total||0);
         this.hashStatuses=st;
         this.hashByPlatform=s.byPlatform||null;
+        this.hashVerifyReady=ready;
+        this.hashVerifying=s.verifying===true;
+        this.hashVerifiedAt=s.verifiedAt||'';
+        this.hashVerifyAge=Number(s.verifyAgeSec||0);
+        this.hashVerifyDuration=Number(s.verifyDurationSec||0);
         this.hashError='';
         this.hashCheckedAt=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+        const dash='—';
         this.setMetrics('hashMetrics',[
           {label:'存证总数',value:this.fmt(s.total),num:Number(s.total||0)},
-          {label:'一致',value:this.fmt(st.VALID),num:Number(st.VALID||0),tone:'ok'},
-          {label:'哈希异常',value:this.fmt(st.HASH_MISMATCH),num:Number(st.HASH_MISMATCH||0),tone:'bad'},
-          {label:'原始缺失',value:this.fmt(st.RAW_MISSING),num:Number(st.RAW_MISSING||0),tone:'warn'}
+          {label:'一致',value:ready?this.fmt(st.VALID):dash,num:ready?Number(st.VALID||0):0,tone:'ok'},
+          {label:'哈希异常',value:ready?this.fmt(st.HASH_MISMATCH):dash,num:ready?Number(st.HASH_MISMATCH||0):0,tone:'bad'},
+          {label:'原始缺失',value:ready?this.fmt(st.RAW_MISSING):dash,num:ready?Number(st.RAW_MISSING||0):0,tone:'warn'}
         ]);
-        this.hashNote='更新于 '+this.hashCheckedAt+'；摘要按 sha256(时间+原文) 在入库前计算并写入，'
-          +'接口已逐条复算。覆盖率 = 存证数 ÷ 业务表行数，分母含采集端重试造成的重复投递；'
+        const freshness=ready
+          ? ('校验于 '+(this.hashVerifyAge<60?this.hashVerifyAge+' 秒':Math.floor(this.hashVerifyAge/60)+' 分钟')+'前完成，耗时 '+this.hashVerifyDuration+' 秒')
+          : (this.hashVerifying?'后台整表校验进行中，结果出来前不显示异常计数':'校验尚未开始');
+        this.hashNote=freshness+'；计数每 30 秒刷新，摘要按 sha256(时间+原文) 在入库前计算并写入。'
+          +'覆盖率 = 存证数 ÷ 业务表行数，分母含采集端重试造成的重复投递；'
           +'存证启用前的历史日志不计入存证，差额不是丢失。';
       }catch(e){
         this.hashTotal=0;this.hashStatuses=null;this.hashMetrics=[];this.hashCheckedAt='';
@@ -395,6 +412,7 @@ function dashboard() {
     hashTone(){
       if(this.hashError)return 'bad';
       if(!this.hashTotal)return 'muted';
+      if(!this.hashVerifyReady)return 'muted';   // 校验未就绪：中性，不下「正常/异常」结论
       if(this.hashCount('HASH_MISMATCH')>0)return 'bad';
       if(this.hashCount('RAW_MISSING')>0)return 'warn';
       return 'ok';
@@ -402,6 +420,7 @@ function dashboard() {
     hashPillText(){
       if(this.hashError)return '存证库不可用';
       if(!this.hashTotal)return '暂无存证';
+      if(!this.hashVerifyReady)return this.hashVerifying?'校验中…':'校验未完成';
       if(this.hashCount('HASH_MISMATCH')>0)return '哈希异常 '+this.fmt(this.hashCount('HASH_MISMATCH'))+' 条';
       if(this.hashCount('RAW_MISSING')>0)return '原始缺失 '+this.fmt(this.hashCount('RAW_MISSING'))+' 条';
       return '完整率 '+(this.hashValidPct()>=100?100:this.hashValidPct())+'%';
@@ -829,16 +848,20 @@ function dashboard() {
           this.api('/api/v1/evidence?'+q.toString()),
         ]);
         const st=s.statuses||{};
+        // 同概览面板：后台校验未就绪时 statuses 全为 0，不能当作「全部一致」
+        const ready=s.verifyReady===true;
         this.evidence=d.items||[];
         this.evidenceTotal=Number(d.total||0);
         this.evidencePages=Math.max(1,Number(d.pages||Math.ceil(this.evidenceTotal/this.PAGE_SIZE)));
         this.evidenceSource=(d.source?s.source.host+' / '+s.source.database+'.'+s.source.table:'');
-        this.evidenceTampered=Number(st.HASH_MISMATCH||0)+Number(st.RAW_MISSING||0);
+        this.evidenceVerifyReady=ready;
+        this.evidenceTampered=ready?Number(st.HASH_MISMATCH||0)+Number(st.RAW_MISSING||0):0;
+        const dash='—';
         this.setMetrics('evidenceMetrics',[
           {label:'存证总数',value:this.fmt(s.total),num:Number(s.total||0),hint:'原始日志记录'},
-          {label:'校验一致',value:this.fmt(st.VALID),num:Number(st.VALID||0),hint:'复算摘要与存证一致',tone:'ok'},
-          {label:'哈希不一致',value:this.fmt(st.HASH_MISMATCH),num:Number(st.HASH_MISMATCH||0),hint:'原文或时间戳被改动',tone:'bad'},
-          {label:'原文缺失',value:this.fmt(st.RAW_MISSING),num:Number(st.RAW_MISSING||0),hint:'无从复算',tone:'warn'},
+          {label:'校验一致',value:ready?this.fmt(st.VALID):dash,num:ready?Number(st.VALID||0):0,hint:ready?'复算摘要与存证一致':'后台校验计算中',tone:'ok'},
+          {label:'哈希不一致',value:ready?this.fmt(st.HASH_MISMATCH):dash,num:ready?Number(st.HASH_MISMATCH||0):0,hint:'原文或时间戳被改动',tone:'bad'},
+          {label:'原文缺失',value:ready?this.fmt(st.RAW_MISSING):dash,num:ready?Number(st.RAW_MISSING||0):0,hint:'无从复算',tone:'warn'},
         ]);
       }catch(e){this.warn('存证数据加载失败',e)}
     },

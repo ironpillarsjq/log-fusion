@@ -646,31 +646,47 @@ Windows 旧字段兼容示例：
 
 ### 7.1 `GET /api/v1/evidence/summary`
 
-无参数。**逐条复算校验**：对每行按 `sha256(IFNULL(log_timestamp,'') + 0x1F + raw_log)`
-重新计算并与 `log_hash` 比较，一次全表扫描给出三类计数。
+无参数。**统计与校验分离**：
+
+- **统计**（每次请求实时执行）：按 `platform` 做 `COUNT(*)` 与 `MIN/MAX(created_at)`，
+  只读 `platform` / `created_at` 两列，**不读 `raw_log`**。配合
+  `(platform, created_at)` 索引是索引覆盖扫描，毫秒级。
+- **校验**（后台线程，默认每 10 分钟一次）：整表按
+  `sha256(IFNULL(log_timestamp,'') + 0x1F + raw_log)` 复算并与 `log_hash` 比较，
+  结果写进程内缓存；请求只读缓存、**不等待**校验。
+
+> 2026-10-28 起改成这个结构。此前每次请求都做整表 SHA-256 复算：55.9 万行 /
+> 429 MB 时实测 9~16 秒，超过前端 8 秒超时，页面直接报「请求超时」——把「慢」
+> 误读成「坏」。
 
 ```json
 {
   "code": 0,
   "message": "ok",
   "data": {
-    "total": 128,
-    "statuses": { "VALID": 125, "HASH_MISMATCH": 2, "RAW_MISSING": 1 },
+    "total": 559215,
+    "statuses": { "VALID": 559211, "HASH_MISMATCH": 3, "RAW_MISSING": 1 },
     "byPlatform": {
-      "linux": { "total": 116, "statuses": { "VALID": 113, "HASH_MISMATCH": 2, "RAW_MISSING": 1 },
-                 "firstAt": "2026-10-11T15:19:42", "lastAt": "2026-10-15T11:40:02" },
-      "windows": { "total": 12, "statuses": { "VALID": 12, "HASH_MISMATCH": 0, "RAW_MISSING": 0 },
-                   "firstAt": "2026-10-16T14:47:54", "lastAt": "2026-10-17T15:10:46" }
+      "linux": { "total": 438610, "statuses": { "VALID": 438606, "HASH_MISMATCH": 3, "RAW_MISSING": 1 },
+                 "firstAt": "2026-10-11T15:19:42", "lastAt": "2026-10-28T15:44:57" },
+      "windows": { "total": 120605, "statuses": { "VALID": 120605, "HASH_MISMATCH": 0, "RAW_MISSING": 0 },
+                   "firstAt": "2026-10-16T14:47:54", "lastAt": "2026-10-28T15:44:28" }
     },
     "healthy": false,
-    "source": { "host": "192.168.5.6", "database": "log_hash", "table": "log_hash" }
+    "verifyReady": true,
+    "verifying": false,
+    "verifiedAt": "2026-10-28T15:50:12",
+    "verifyAgeSec": 37,
+    "verifyDurationSec": 12.4,
+    "verifyError": null,
+    "source": { "host": "127.0.0.1", "database": "log_hash", "table": "log_hash" }
   }
 }
 ```
 
-- `total` 是存证表当前真实行数，等于三个状态之和。
-- `byPlatform`（2026-10-16 新增）：按 `platform` 拆分，键为小写平台名，每项给 `total`、
-  `statuses` 和该平台**首次/最近一次写入存证的时间**（`firstAt`/`lastAt`）。页面用它算
+- `total` 是存证表当前真实行数；正常情况下等于 `statuses` 三项之和。
+- `byPlatform`：按 `platform` 拆分，键为小写平台名，每项给 `total`、`statuses`
+  和该平台**首次/最近一次写入存证的时间**（`firstAt`/`lastAt`）。页面用它算
   「覆盖率 = 存证数 ÷ 该平台日志总量」，并用 `firstAt` 标注「存证自何时启用」——
   **早于 `firstAt` 的日志本来就没有存证，不能算成缺失**。
 - 覆盖率的分母是业务表行数，**含采集端重试造成的重复投递**；因此覆盖率用于看趋势，
@@ -679,17 +695,24 @@ Windows 旧字段兼容示例：
   - `VALID` —— 复算结果与存证摘要一致；
   - `HASH_MISMATCH` —— **不一致，说明原文 / 时间戳 / 摘要被改动**；
   - `RAW_MISSING` —— 原文为空，无从复算。
-  - 早先定义的 `PENDING`（缺时间戳无法校验）**已移除**：写入端把缺失时间戳按**空串**
-    参与哈希（`raw_text(None) == ""`），因此这类记录同样可以复算；把它当成待校验会对
-    合法存证误报。
-- `healthy`：`HASH_MISMATCH == 0 且 RAW_MISSING == 0`，供页面直接判断整体是否正常。
+  - 早先定义的 `PENDING` 已移除：写入端把缺失时间戳按**空串**参与哈希
+    （`raw_text(None) == ""`），这类记录同样可以复算。
+- **校验新鲜度**（2026-10-28 新增）：
+  - `verifyReady` —— 进程内是否已有一次校验结果（首次请求后才会变为 true）；
+  - `verifying` —— 当前是否有校验线程在跑；
+  - `verifiedAt` / `verifyAgeSec` —— 结果完成时间与距今秒数；
+  - `verifyDurationSec` —— 上一次校验耗时；
+  - `verifyError` —— 上一次校验的异常摘要（成功时为 null）。
+- `healthy`：`HASH_MISMATCH == 0 且 RAW_MISSING == 0`。**但校验未就绪、或结果超过
+  1 小时未刷新时返回 `null`**——把「还没算」或「数据陈旧」显示成「全部正常」属于
+  把未知伪装成已知，页面必须显示「校验中 / 已过期」。
 - `source`：实际读取的主机 / 库 / 表，用于排除「页面和 Navicat 看的不是同一个库」。
 - **校验规则必须与写入端完全一致**（分隔符 `0x1F`、NULL 时间戳按空串、大小写敏感）；
   任一端改动都会让全部存证被判成篡改，或让真正的篡改被判成正常。
-- 查询失败时返回 **503** 并记录日志（**不再返回 `total: 0`**）：把数据库故障降级成
+- 查询失败时返回 **503** 并记录日志（**不返回 `total: 0`**）：把数据库故障降级成
   「0 条存证」会让「库连不上」和「确实没有存证」无法区分，操作者会误以为数据被清空了。
-- 性能：当前实现对**整表**复算 SHA-256，万级行数约 0.2 秒。百万级时应改为增量校验
-  或异步任务（见 `docs/TODO.md`）。
+- 性能：统计部分毫秒级（配合 `(platform, created_at)` 索引）；校验部分把整表
+  SHA-256 移到后台线程，默认 10 分钟一次，耗时随表增长但不影响接口响应。
 
 ### 7.2 `GET /api/v1/evidence`
 
