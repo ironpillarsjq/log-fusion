@@ -303,4 +303,6 @@ API 构造响应时会实时重算状态，watchdog 只用重算结果回写数�
 
 ## WAF/DAS 接收链路（2026-10-28）
 
+UDP 使用原生 `sock_recvfrom`，不支持该 API 的事件循环（如 uvloop）回退到 `add_reader` + 非阻塞 `recvfrom`，仍逐条等待 SQLite 提交，不增加内存队列。接收任务启动检查及异常回调避免失效 UDP socket 长期假监听；关闭会清理 reader/socket 并收尾已经接受的提交。兼容性与现场排查说明见 SYSLOG.md。
+
 `设备 TCP/UDP → syslog_server → syslog_store.Inbox（SQLite WAL/FULL）→ syslog_protocol / syslog_parsers → MySQLDeviceStore → log_fusion 六表`。字段事实源是 device_log_catalog，DDL 在 docs/sql/device_syslog.sql。完整消息的 raw_log、raw_bytes 和 payload 随记录保存；不可分类/解码报文停留本地隔离区。远端提交之后再确认本地队列，靠稳定 ingest_id 幂等重放，不按原文摘要去重。单条事务写入，后续吞吐优化需实测。接收生命周期由 app.main.lifespan 管理，运行 run.py 默认启用两个接收器，绑定成功才就绪，退出先关闭监听并收尾；端口冲突时回滚全部已启动资源。仍须单 worker，不在导入或 reload 父进程绑定端口。没有新增 Syslog WebSocket 广播。没有新增前端页面、HTTP 查询、消息代理、跨进程广播或存证联动，详细边界与部署步骤见 [SYSLOG.md](SYSLOG.md)。

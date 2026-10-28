@@ -54,6 +54,8 @@ DAS_SYSLOG_TIMEZONE=+08:00
 
 启用的接收器遇端口占用、目录不可写或非法配置时会使应用启动失败，并清理已绑定端口；不能只启动 HTTP 却假装接收器正常。若之前启动过独立 CLI，应先停止它。MySQL 暂不可用/六表未建不阻止接收启动，原文仍落缓冲，写库错误按 pending 重试。
 
+UDP 接收兼容标准 asyncio 与 uvloop：优先使用 `loop.sock_recvfrom()`，遇 `NotImplementedError` 时改用 `add_reader()` 注册可读事件、通过非阻塞 socket `recvfrom(65535)` 读取整条报文；每次等待结束/取消都移除 reader。启动时先运行一次接收任务再报告就绪；运行中任务异常会立即在 `uvicorn.error` 记录产品、端口、异常类型及堆栈，并关闭失效 UDP socket。退出不再因已失败的 UDP 任务而跳过后续清理。不需要更改 run.py 或禁用 uvloop。
+
 可选 CLI 继续用于状态和重放，也可作为高级场景的独立启动方式；独立监听之前应关闭应用内对应接收器，不能两个进程共用同一实例缓冲。现有 `deploy/log-fusion.service` 会随 run.py 一起管理接收器，无须额外注册两个服务；网页一键更新会一起重启监听，重启间隙尤其 UDP 仍可能丢数据。
 
 以下参数表仅适用于可选 CLI `python -B -m app.syslog_server`，应用内接收使用上面的环境变量，不读取 CLI 参数：
@@ -109,6 +111,40 @@ python -B -m app.syslog_server --product waf --source-instance waf-site-a --retr
 
 `python -B -m pytest tests/test_syslog.py` 覆盖 15 种 WAF tag、三类 DAS、旧版告警、保留原文、类型转换、时区、真实 loopback TCP/UDP（含长报文）、应用生命周期启停/端口冲突回滚/重载端口重用、分帧、磁盘重启恢复、写库失败保留、幂等重放、隔离和 SQL/catalog 一致性；MySQL 仍由 tests/conftest.py 硬禁用。
 
+2026-10-28 UDP 兼容性回归模拟 uvloop 的 `sock_recvfrom()` 未实现行为：WAF/DAS 各发送两条约 40 KB UDP 报文，核验原文字节完整、解析后写入测试 sink、重复关闭和同端口重用；另覆盖启动接收 API 失败的回滚、运行中任务失败及时报警并关闭 socket。Windows 本地测试使用 SelectorEventLoop 模拟此能力缺口，不等同于在 Linux 真正运行 uvloop 或真实 MySQL 联调。
+
 待真实环境核验：设备实际传输协议与分帧、整体 Base64 覆盖范围、DAS 会话字段/数值 log_type 变体、六表 DDL/MySQL 方言与吞吐。前端列表/详情与聚合 API、存证库联动、队列备份与容量告警尚未实现，不能把本接收器已完成等同于这些能力已完成。
 
 协议依据：[RFC5424](https://www.rfc-editor.org/rfc/rfc5424.html)、[RFC6587](https://datatracker.ietf.org/doc/html/rfc6587)、[RFC5426](https://www.rfc-editor.org/rfc/rfc5426.html)。产品字段根据本次用户提供的 WAF V6.0.8.1 接口说明、DAS 新旧 Syslog 说明实现，实际报文优先核验。
+
+## 6. 服务器排查：端口已监听但没有数据
+
+`ss` 出现 5514/5515 仅证明 socket 已绑定；CLI `--status` 的 pending/quarantine 都为 0，可能是尚未接收，也可能是已全部写库，不能单独作为采集成功证据。应同时检查六表最新 `received_at`、对应实例/路径的缓冲，以及服务日志。过滤日志时先筛 Syslog 再取末尾，避免高频心跳淹没错误：
+
+```bash
+journalctl -u log-fusion --since today --no-pager | grep -Ei 'syslog|traceback|exception' | tail -n 80
+```
+
+已发现旧实现存在事件循环兼容性缺陷：[uvloop 0.22.1 源码](https://github.com/MagicStack/uvloop/blob/v0.22.1/uvloop/loop.pyx) 的 `sock_recvfrom()` 直接抛出 `NotImplementedError`；`uvicorn[standard]` 在适用平台可能自动使用 uvloop。旧版 UDP task 因此可能退出，socket 却仍显示监听，关闭时才出现 `Syslog listener cleanup failed error_type=NotImplementedError`。修复如 §2；用户服务器日志与此现象吻合，但完整异常堆栈、实际事件循环及修复后的收包仍须服务器复测。历史心跳写入死锁不能据此当作 Syslog 故障原因。
+
+更新修复并重启现有服务后，可在服务器发送一条带明确标记的本机测试日志（会新增一条业务测试记录），把接收/解析/写库与设备网络路径分别核验：
+
+```bash
+/opt/log-fusion/.venv/bin/python -B - <<'PY'
+import socket
+from datetime import datetime, timezone
+
+message = f"tag:waf_log_login stat_time:{datetime.now(timezone.utc).isoformat()} user:SYSLOG_PROBE"
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    sock.sendto(message.encode("utf-8"), ("127.0.0.1", 5514))
+PY
+```
+
+```sql
+SELECT id, log_type, peer_ip, received_at, raw_log
+FROM log_fusion.waf_audit_log
+WHERE `user` = 'SYSLOG_PROBE'
+ORDER BY id DESC LIMIT 5;
+```
+
+有新记录才说明本机链路成功；未出现则复查缓冲及服务错误。若配置了来源过滤，需确认测试源 127.0.0.1 允许接收。本机成功后，再用 `tcpdump -nn -i any 'udp dst port 5514' -c 10` 查看 WAF 报文是否到达；WAF 端未到达的报文不会因本接收器修复而自动恢复。

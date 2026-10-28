@@ -69,6 +69,7 @@ class Receiver:
         self.max_connections = max_connections
         self.allowed = tuple(ipaddress.ip_network(value, strict=False) for value in allow_sources)
         self.server = self.udp_socket = self.udp_task = None
+        self._udp_use_reader = False
         self.clients: set[asyncio.Task] = set()
         self.writers = set()
         self.closing = False
@@ -105,12 +106,58 @@ class Receiver:
             raise
         self.counters["received"] += 1
 
-    async def _udp(self):
+    async def _receive_datagram(self):
         loop = asyncio.get_running_loop()
+        if not self._udp_use_reader:
+            try:
+                return await loop.sock_recvfrom(self.udp_socket, 65535)
+            except NotImplementedError:
+                # uvloop exposes sock_recvfrom but raises NotImplementedError (including 0.22).
+                # Use its supported fd reader API; keep native recvfrom on Proactor/asyncio.
+                self._udp_use_reader = True
+                logging.getLogger("uvicorn.error").warning(
+                    "%s Syslog UDP using fd reader: %s.sock_recvfrom is unavailable",
+                    self.product.upper(), type(loop).__module__ + "." + type(loop).__name__)
+        ready = loop.create_future()
+        fd = self.udp_socket.fileno()
+
+        def readable():
+            if ready.done():
+                return
+            try:
+                result = self.udp_socket.recvfrom(65535)
+            except (BlockingIOError, InterruptedError):
+                return
+            except Exception as exc:
+                ready.set_exception(exc)
+            else:
+                ready.set_result(result)
+
+        loop.add_reader(fd, readable)
+        try:
+            return await ready
+        finally:
+            # Always unregister before close/rebind, including cancellation while idle.
+            loop.remove_reader(fd)
+
+    def _udp_finished(self, task):
+        if task.cancelled():
+            return
+        failure = task.exception()
+        if failure is not None or not self.closing:
+            logging.getLogger("uvicorn.error").error(
+                "%s Syslog UDP receive task stopped bind=%s:%d error_type=%s; UDP socket closed",
+                self.product.upper(), self.host, self.port,
+                type(failure).__name__ if failure is not None else "unexpected_exit",
+                exc_info=(type(failure), failure, failure.__traceback__) if failure is not None else None)
+            if self.udp_socket:
+                self.udp_socket.close()
+
+    async def _udp(self):
         while True:
             # Entire UDP payload, never recvfrom(1024) truncation. max_bytes is checked after receipt.
             try:
-                raw, peer = await loop.sock_recvfrom(self.udp_socket, 65535)
+                raw, peer = await self._receive_datagram()
             except OSError:
                 self.counters["dropped"] += 1
                 logger.error("Syslog UDP receive error")
@@ -157,6 +204,7 @@ class Receiver:
 
     async def start(self):
         self.closing = False
+        self._udp_use_reader = False
         # Numeric bind addresses avoid ambiguous IPv4/IPv6 port allocation.
         address = ipaddress.ip_address(self.host)
         family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
@@ -170,6 +218,11 @@ class Receiver:
                 self.udp_socket.bind((self.host, self.port))
                 self.port = self.udp_socket.getsockname()[1]
                 self.udp_task = asyncio.create_task(self._udp())
+                self.udp_task.add_done_callback(self._udp_finished)
+                # Exercise the receive API before reporting readiness, not merely the bind.
+                await asyncio.sleep(0)
+                if self.udp_task.done():
+                    self.udp_task.result()
         except BaseException:
             await self.close()
             raise
@@ -184,8 +237,8 @@ class Receiver:
             await self.server.wait_closed()
         if self.udp_task:
             self.udp_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self.udp_task
+            # A failed task has already been reported; still close sockets and TCP clients.
+            await asyncio.gather(self.udp_task, return_exceptions=True)
         if self.udp_socket:
             self.udp_socket.close()
         # Wait for accepted inbox writes. Do not cancel a to_thread commit and close SQLite beneath it.

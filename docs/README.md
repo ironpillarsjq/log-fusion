@@ -182,7 +182,7 @@ python run.py
 python -m pytest        # 在仓库根目录执行
 ```
 
-测试位于 `tests/`（当前 **369 个用例**，其中 21 个归档用例需要 `tmp_path`，本次开发环境全量通过）：通过类级 patch 禁用 `Engine.connect/begin`，并把连接参数指向不可用占位值，因此**不连接 MySQL 或其他外部数据库**（Syslog 持久化测试使用临时本地 SQLite），可在无 MySQL 环境重复运行。覆盖类别名校验、列表/导出取数上限、关键词与最近日志的列适配、采集解析（时间/auditd 映射/Windows 字段/按表裁剪）与入库失败分阶段上报、心跳状态阈值、WebSocket 建连快照与连接计数、图表聚合接口（趋势/排行的参数校验与 TTL 缓存、心跳历史环形缓冲）、静态资源与模板契约、**前端图表接线契约**（模板里的每个图表容器都必须有对应的 `getChart()`、页面卸载要释放图表实例、时间桶必须按本地时区渲染）、路由与 `docs/API.md` §2 的一致性（含 SSE 已移除的守卫）、存证哈希口径（`hashing.py`）、存证接口 503 语义与 errno 1062 判定、服务端更新接口（`/api/v1/admin/update` 的 confirm 校验、systemd-run 触发与并发拒绝）、**更新脚本的原地更新不变量**（只用 `reset --hard`，不含 `git clean`/`rm -rf`；`.gitignore` 必须忽略 `.venv/`、`.env`、`data/`、`backend/data/`；单元文件、安装脚本与更新脚本三处的服务名必须一致）、**分类日志视图**（5 个子菜单、`full=true` 取整行、原始详情弹窗）、归档「落盘校验通过才删除」等不变量，以及 `docs/` 与代码的文档一致性（`test_doc_sync.py`）。仍没有 lint / typecheck 配置。
+测试位于 `tests/`（当前 **377 个用例**，其中 21 个归档用例需要 `tmp_path`，本次开发环境全量通过）：通过类级 patch 禁用 `Engine.connect/begin`，并把连接参数指向不可用占位值，因此**不连接 MySQL 或其他外部数据库**（Syslog 持久化测试使用临时本地 SQLite），可在无 MySQL 环境重复运行。覆盖类别名校验、列表/导出取数上限、关键词与最近日志的列适配、采集解析（时间/auditd 映射/Windows 字段/按表裁剪）与入库失败分阶段上报、心跳状态阈值、WebSocket 建连快照与连接计数、图表聚合接口（趋势/排行的参数校验与 TTL 缓存、心跳历史环形缓冲）、静态资源与模板契约、**前端图表接线契约**（模板里的每个图表容器都必须有对应的 `getChart()`、页面卸载要释放图表实例、时间桶必须按本地时区渲染）、路由与 `docs/API.md` §2 的一致性（含 SSE 已移除的守卫）、存证哈希口径（`hashing.py`）、存证接口 503 语义与 errno 1062 判定、服务端更新接口（`/api/v1/admin/update` 的 confirm 校验、systemd-run 触发与并发拒绝）、**更新脚本的原地更新不变量**（只用 `reset --hard`，不含 `git clean`/`rm -rf`；`.gitignore` 必须忽略 `.venv/`、`.env`、`data/`、`backend/data/`；单元文件、安装脚本与更新脚本三处的服务名必须一致）、**分类日志视图**（5 个子菜单、`full=true` 取整行、原始详情弹窗）、归档「落盘校验通过才删除」等不变量，以及 `docs/` 与代码的文档一致性（`test_doc_sync.py`）。仍没有 lint / typecheck 配置。
 
 图表本身另有两个不依赖浏览器的自检（改动图表后手工执行，见 §8）：
 
@@ -286,5 +286,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/health
 
 
 ## WAF 与 DAS Syslog 接入（2026-10-28）
+
+UDP 已兼容 uvloop 未实现 sock_recvfrom 的情况，自动使用 fd reader 接收；异常任务会记录堆栈并关闭失效 UDP socket。端口监听不等于成功收包，空缓冲也可能表示已写库；本机测试与设备抓包的验证步骤见 [SYSLOG.md §6](SYSLOG.md#6-服务器排查端口已监听但没有数据)。
 
 `backend/app/syslog_server.py` 已接入 FastAPI 生命周期，运行 run.py 或现有启动脚本默认一起启动 WAF 5514 与 DAS 5515 TCP/UDP 接收，退出/重载时一起释放。配置在 backend/.env（SYSLOG_ENABLED、WAF_SYSLOG_*、DAS_SYSLOG_*）。完整消息先写 `data/syslog/` 的 SQLite 缓冲，再经产品解析器写入 `LOG_FUSION_DB` 的六张专用表；每表都有 `raw_log` 原文列。部署前显式审查执行 `docs/sql/device_syslog.sql`，启动、来源过滤、状态与重放命令见 [SYSLOG.md](SYSLOG.md)。本次未连接真实库建表，前端/HTTP 查询接口与存证库联动尚未接入。`tests/test_syslog.py` 包含纯函数、真实 loopback 收包和本地持久化测试，不访问 MySQL。

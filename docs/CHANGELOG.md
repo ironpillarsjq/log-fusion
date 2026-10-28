@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+### Fixed — 2026-10-28（Syslog UDP 兼容 uvloop）
+
+- 修复 UDP 直接依赖 loop.sock_recvfrom 的问题：uvloop 对该 API 抛出 NotImplementedError，旧实现可能在端口绑定后接收任务立即退出，关闭时才记录清理失败。本机模拟报文也无法进入缓冲。
+- 自动回退 add_reader + 非阻塞 recvfrom(65535)，保留逐条落盘和完整报文语义，不修改 run.py；接收任务运行一次后才报告就绪，运行中异常立即输出产品/端口/堆栈并关闭 UDP socket，退出仍完成其余清理。
+- 新增 4 项回归：WAF/DAS 各验证不支持 sock_recvfrom 时约 40 KB 报文完整接收、解析、重复关闭及重绑；启动 API 失败回滚、运行时失败报警/释放资源。Syslog 64 passed，全量 377 passed。标准事件循环下的原有 TCP/UDP 回归保留；未在 Linux 实跑 uvloop、未访问真实 MySQL 或设备，服务器需更新后复测。
+- 修改 syslog_server.py、test_syslog.py，并同步运行/架构/决策/待办文档。无实际数据库结构变化，无实际接口行为变化。
+
 ### Fixed — 2026-10-28（存证摘要超时：整表 SHA-256 移入后台）
 
 - `/api/v1/evidence/summary` 此前每次请求都对整表复算 SHA-256。实测 55.9 万行 / 429 MB 需 9~16 秒（MySQL 直查 16.1 秒），超过前端 8 秒硬超时，页面报「存证数据加载失败：请求超时（8s）」——把「慢」误读成「坏」。

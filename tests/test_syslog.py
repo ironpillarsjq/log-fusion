@@ -293,6 +293,52 @@ def test_real_udp_tcp_receiver_long_messages_allowlist_and_shutdown(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("product,table", [("waf", "waf_audit_log"), ("das", "das_statement_log")])
+def test_udp_receives_when_event_loop_sock_recvfrom_is_unimplemented(tmp_path, monkeypatch, product, table):
+    async def run():
+        loop = asyncio.get_running_loop()
+        calls = 0
+        async def unsupported(*args):
+            nonlocal calls
+            calls += 1
+            raise NotImplementedError
+        monkeypatch.setattr(loop, "sock_recvfrom", unsupported)
+        inbox = Inbox(tmp_path / "fallback.sqlite3")
+        receiver = Receiver(inbox, product=product, source_instance="probe", host="127.0.0.1", port=0)
+        payload = (b"tag:waf_log_login stat_time:2026-10-28 12:00:00 user:SYSLOG_PROBE desc:" + b"x" * 40000
+                   if product == "waf" else json.dumps(dict(log_type="audit", capture_time="2026-10-28 12:00:00",
+                                                          sql_statement="x" * 40000)).encode())
+        try:
+            await receiver.start()
+            port = receiver.port
+            for expected in (1, 2):
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.sendto(payload, ("127.0.0.1", port))
+                for _ in range(200):
+                    if receiver.counters["received"] == expected:
+                        break
+                    await asyncio.sleep(.01)
+                assert receiver.counters["received"] == expected
+            assert calls == 1  # Remember the unsupported capability instead of failing on each packet.
+            assert all(item["raw"] == payload for item in inbox.pending())
+            sink = MemorySink()
+            assert drain_once(inbox, sink)["stored"] == 2
+            assert {item.table for item in sink.rows.values()} == {table}
+            await receiver.close()
+            await receiver.close()  # Cancel a pending reader safely and allow repeated shutdown.
+            replacement = Receiver(inbox, product=product, source_instance="probe", host="127.0.0.1", port=port)
+            try:
+                await replacement.start()
+            finally:
+                await replacement.close()
+        finally:
+            await receiver.close()
+            inbox.close()
+    # Also exercises the fallback on Windows, whose default Proactor loop has no add_reader.
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        runner.run(run())
+
+
 def test_cancel_waits_for_inflight_durable_commit(tmp_path):
     async def run():
         inbox = Inbox(tmp_path / "cancel.sqlite3")
@@ -515,6 +561,59 @@ def test_second_receiver_bind_failure_aborts_start_and_cleans_first_receiver(tmp
             await replacement.close()
         finally:
             reopened.close()
+    asyncio.run(run())
+
+
+def test_udp_receive_api_failure_aborts_startup_and_releases_all_resources(tmp_path, monkeypatch, caplog):
+    from app import syslog_server
+    engine, sink = patch_lifecycle_store(monkeypatch)
+    receivers = []
+    original_start = Receiver.start
+    async def recording_start(self):
+        receivers.append(self)
+        return await original_start(self)
+    async def unavailable(self):
+        raise NotImplementedError("receive API unavailable")
+    monkeypatch.setattr(Receiver, "start", recording_start)
+    monkeypatch.setattr(Receiver, "_receive_datagram", unavailable)
+    async def run():
+        with pytest.raises(NotImplementedError, match="receive API unavailable"):
+            async with syslog_server.application_receivers(lifecycle_settings(tmp_path)):
+                pytest.fail("binding alone must not signal readiness")
+        assert engine.disposed and len(receivers) == 1
+        first = receivers[0]
+        assert first.udp_socket.fileno() == -1 and not first.server.is_serving()
+        assert "Syslog UDP receive task stopped" in caplog.text
+        assert "Syslog listener cleanup failed" not in caplog.text
+        reopened = Inbox(first.inbox.path)
+        reopened.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.bind(("127.0.0.1", first.port))
+    asyncio.run(run())
+
+
+def test_udp_runtime_failure_is_reported_and_closes_socket_before_shutdown(tmp_path, monkeypatch, caplog):
+    async def run():
+        fail = asyncio.Event()
+        async def unavailable(self):
+            await fail.wait()
+            raise RuntimeError("receive loop failed")
+        monkeypatch.setattr(Receiver, "_receive_datagram", unavailable)
+        inbox = Inbox(tmp_path / "failed.sqlite3")
+        receiver = Receiver(inbox, product="waf", source_instance="probe", host="127.0.0.1", port=0)
+        try:
+            await receiver.start()
+            fail.set()
+            with pytest.raises(RuntimeError, match="receive loop failed"):
+                await receiver.udp_task
+            await asyncio.sleep(0)
+            assert receiver.udp_socket.fileno() == -1
+            assert "Syslog UDP receive task stopped" in caplog.text
+            await receiver.close()
+            assert not receiver.server.is_serving()
+        finally:
+            await receiver.close()
+            inbox.close()
     asyncio.run(run())
 
 
